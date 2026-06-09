@@ -1,3 +1,4 @@
+from email.utils import formatdate
 from unittest import mock
 
 import pytest
@@ -194,3 +195,74 @@ def test_swagger_oauth_redirect_view(get_params):
     else:
         assert response.headers['Location'] ==\
                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_last_modified_present(no_warnings):
+    response = APIClient().get('/api/v1/schema/')
+    assert response.status_code == 200
+    assert 'Last-Modified' in response
+    # Last-Modified must be a valid HTTP-date
+    from email.utils import parsedate_to_datetime
+    assert parsedate_to_datetime(response['Last-Modified']) is not None
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_if_modified_since_not_modified(no_warnings):
+    first_response = APIClient().get('/api/v1/schema/')
+    assert first_response.status_code == 200
+    last_modified = first_response['Last-Modified']
+
+    second_response = APIClient().get(
+        '/api/v1/schema/', HTTP_IF_MODIFIED_SINCE=last_modified
+    )
+    assert second_response.status_code == 304
+    assert second_response.content == b''
+    assert second_response['Last-Modified'] == last_modified
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_if_modified_since_future_not_modified(no_warnings):
+    # any date strictly later than the actual Last-Modified should also yield 304.
+    future = formatdate(9999999999, usegmt=True)
+    response = APIClient().get('/api/v1/schema/', HTTP_IF_MODIFIED_SINCE=future)
+    assert response.status_code == 304
+    assert response.content == b''
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_if_modified_since_past_returns_schema(no_warnings):
+    past = formatdate(0, usegmt=True)  # 1970-01-01
+    response = APIClient().get('/api/v1/schema/', HTTP_IF_MODIFIED_SINCE=past)
+    assert response.status_code == 200
+    assert response.content.startswith(b'openapi: 3.0.3\n')
+    assert 'Last-Modified' in response
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_if_modified_since_invalid_header_ignored(no_warnings):
+    # malformed header values should be treated as absent, not crash the view.
+    response = APIClient().get(
+        '/api/v1/schema/', HTTP_IF_MODIFIED_SINCE='not-a-valid-date'
+    )
+    assert response.status_code == 200
+    assert response.content.startswith(b'openapi: 3.0.3\n')
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_last_modified_changes_with_version(no_warnings):
+    """
+    Changing settings.VERSION should shift the Last-Modified timestamp so
+    stale client caches are invalidated.
+    """
+    response_a = APIClient().get('/api/v1/schema/')
+    assert response_a.status_code == 200
+    lm_a = response_a['Last-Modified']
+
+    with mock.patch('django.conf.settings.VERSION', '9.9.9-different'):
+        response_b = APIClient().get('/api/v1/schema/')
+        assert response_b.status_code == 200
+        lm_b = response_b['Last-Modified']
+
+    assert lm_a != lm_b
+

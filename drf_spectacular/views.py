@@ -1,9 +1,14 @@
+import datetime
+import hashlib
 import json
+import os
 from collections import namedtuple
+from email.utils import formatdate, parsedate_to_datetime
 from importlib import import_module
 from typing import Any, Dict, List, Optional, Type
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.templatetags.static import static
 from django.utils import translation
 from django.utils.translation import gettext_lazy as _
@@ -76,21 +81,106 @@ class SpectacularAPIView(APIView):
                 # explicitly resolved urlconf
                 self.urlconf = ModuleWrapper(tuple(self.urlconf))
 
+        last_modified = self._get_schema_last_modified()
+
+        # HTTP If-Modified-Since check: skip full schema regeneration when client
+        # already has an up-to-date copy. This avoids unnecessary CPU load from
+        # Swagger UI auto-refresh or similar frequent document consumers.
+        if_modified_since = request.META.get('HTTP_IF_MODIFIED_SINCE')
+        if if_modified_since and last_modified is not None:
+            try:
+                if_modified_since_dt = parsedate_to_datetime(if_modified_since)
+            except (TypeError, ValueError):
+                if_modified_since_dt = None
+            if if_modified_since_dt is not None:
+                if last_modified <= if_modified_since_dt:
+                    not_modified = HttpResponse(status=304)
+                    not_modified['Last-Modified'] = formatdate(
+                        last_modified.timestamp(), usegmt=True
+                    )
+                    return not_modified
+
         with patched_settings(self.custom_settings):
             if settings.USE_I18N and request.GET.get('lang'):
                 with translation.override(request.GET.get('lang')):
-                    return self._get_schema_response(request)
+                    return self._get_schema_response(request, last_modified)
             else:
-                return self._get_schema_response(request)
+                return self._get_schema_response(request, last_modified)
 
-    def _get_schema_response(self, request):
+    def _get_schema_last_modified(self):
+        """
+        Compute a proxy datetime for the "last modified" time of the generated
+        schema. The heuristic considers the following sources in order:
+
+        1. mtime of the project's ``pyproject.toml`` (if discoverable), which
+           usually changes on dependency/version bumps.
+        2. A stable hash derived from the configured API ``VERSION`` and the
+           effective ``SPECTACULAR_SETTINGS`` values. Changes in either will
+           yield a new datetime so clients always re-fetch when the schema
+           might have changed.
+
+        Returns a timezone-aware ``datetime.datetime`` in UTC, or ``None`` if
+        no reliable timestamp can be determined.
+        """
+        candidates = []
+
+        # proxy 1: pyproject.toml modification time
+        for rel_dir in ('', os.pardir):
+            candidate_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                rel_dir, 'pyproject.toml'
+            )
+            if os.path.isfile(candidate_path):
+                try:
+                    candidates.append(os.path.getmtime(candidate_path))
+                except OSError:
+                    pass
+                break
+
+        # proxy 2: VERSION + SPECTACULAR_SETTINGS hash. We map a hash digest
+        # to a stable datetime so any configuration change shifts the
+        # Last-Modified value and thus invalidates client caches.
+        version = getattr(settings, 'VERSION', '') or ''
+        raw_settings = getattr(spectacular_settings, 'user_settings', None) or {}
+        try:
+            settings_payload = json.dumps(
+                raw_settings, sort_keys=True, default=str, ensure_ascii=False
+            )
+        except TypeError:
+            settings_payload = ''
+        digest = hashlib.sha1(
+            f'{version}|{settings_payload}'.encode('utf-8')
+        ).digest()
+        # fold the first 8 bytes of the SHA-1 digest into a pseudo-timestamp
+        # that lies in the past so Last-Modified is always strictly less than
+        # the current time.
+        pseudo_ts = 0
+        for byte in digest[:8]:
+            pseudo_ts = (pseudo_ts << 8) | byte
+        epoch_days = pseudo_ts % (365 * 50)  # keep within 50-year window
+        base = datetime.datetime(
+            2020, 1, 1, tzinfo=datetime.timezone.utc
+        )
+        candidates.append((base + datetime.timedelta(days=epoch_days)).timestamp())
+
+        if not candidates:
+            return None
+        latest_ts = max(candidates)
+        return datetime.datetime.fromtimestamp(latest_ts, tz=datetime.timezone.utc)
+
+    def _get_schema_response(self, request, last_modified=None):
         # version specified as parameter to the view always takes precedence. after
         # that we try to source version through the schema view's own versioning_class.
         version = self.api_version or request.version or self._get_version_parameter(request)
         generator = self.generator_class(urlconf=self.urlconf, api_version=version, patterns=self.patterns)
+        headers = {"Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"'}
+        if last_modified is None:
+            last_modified = self._get_schema_last_modified()
+        if last_modified is not None:
+            headers['Last-Modified'] = formatdate(last_modified.timestamp(), usegmt=True)
         return Response(
             data=generator.get_schema(request=request, public=self.serve_public),
-            headers={"Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"'}
+            headers=headers
         )
 
     def _get_filename(self, request, version):
