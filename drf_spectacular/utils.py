@@ -476,14 +476,18 @@ def extend_schema(
                 return super().get_examples()
 
             def get_request_serializer(self):
-                if request is not empty and is_in_scope(self):
-                    return request
-                return super().get_request_serializer()
+                return self._get_request_serializer(
+                    request=request,
+                    in_scope=is_in_scope(self),
+                    fallback=super().get_request_serializer,
+                )
 
             def get_response_serializers(self):
-                if responses is not empty and is_in_scope(self):
-                    return responses
-                return super().get_response_serializers()
+                return self._get_response_serializers(
+                    responses=responses,
+                    in_scope=is_in_scope(self),
+                    fallback=super().get_response_serializers,
+                )
 
             def get_description(self):
                 if description and is_in_scope(self):
