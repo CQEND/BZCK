@@ -52,6 +52,8 @@ def pytest_configure(config):
 
     settings.configure(
         DEBUG_PROPAGATE_EXCEPTIONS=True,
+        DEBUG=True,
+        ALLOWED_HOSTS=['testserver'],
         DATABASES={'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': ':memory:'

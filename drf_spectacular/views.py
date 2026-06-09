@@ -1,9 +1,14 @@
+import hashlib
 import json
+import os
 from collections import namedtuple
+from datetime import datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from importlib import import_module
 from typing import Any, Dict, List, Optional, Type
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.templatetags.static import static
 from django.utils import translation
 from django.utils.translation import gettext_lazy as _
@@ -60,8 +65,49 @@ class SpectacularAPIView(APIView):
     custom_settings: Optional[Dict[str, Any]] = None
     patterns: Optional[List[Any]] = None
 
+    def _get_schema_last_modified(self):
+        candidate_paths = [
+            os.path.join(os.path.dirname(__file__), '..', 'pyproject.toml'),
+            os.path.join(os.getcwd(), 'pyproject.toml'),
+        ]
+        for candidate in candidate_paths:
+            abs_path = os.path.abspath(candidate)
+            if os.path.isfile(abs_path):
+                base_mtime = os.path.getmtime(abs_path)
+                break
+        else:
+            base_mtime = 0
+
+        settings_hash_input = json.dumps({
+            'VERSION': spectacular_settings.VERSION,
+            'TITLE': spectacular_settings.TITLE,
+            'DESCRIPTION': spectacular_settings.DESCRIPTION,
+            'TOS': spectacular_settings.TOS,
+            'CONTACT': spectacular_settings.CONTACT,
+            'LICENSE': spectacular_settings.LICENSE,
+            'OAS_VERSION': spectacular_settings.OAS_VERSION,
+            'SERVERS': spectacular_settings.SERVERS,
+            'TAGS': spectacular_settings.TAGS,
+            'EXTERNAL_DOCS': spectacular_settings.EXTERNAL_DOCS,
+            'EXTENSIONS_INFO': spectacular_settings.EXTENSIONS_INFO,
+            'EXTENSIONS_ROOT': spectacular_settings.EXTENSIONS_ROOT,
+        }, sort_keys=True, default=str).encode()
+        settings_hash = int(hashlib.md5(settings_hash_input).hexdigest()[:8], 16)
+        hash_seconds = settings_hash % 86400
+
+        return datetime.fromtimestamp(base_mtime + hash_seconds, tz=timezone.utc)
+
     @extend_schema(**SCHEMA_KWARGS)
     def get(self, request, *args, **kwargs):
+        if 'HTTP_IF_MODIFIED_SINCE' in request.META:
+            last_modified = self._get_schema_last_modified()
+            try:
+                if_modified_since = parsedate_to_datetime(request.META['HTTP_IF_MODIFIED_SINCE'])
+            except (ValueError, TypeError):
+                if_modified_since = None
+            if if_modified_since is not None and last_modified <= if_modified_since:
+                return HttpResponse(status=304)
+
         # special handling of custom urlconf parameter
         if isinstance(self.urlconf, list) or isinstance(self.urlconf, tuple):
             ModuleWrapper = namedtuple('ModuleWrapper', ['urlpatterns'])
@@ -90,7 +136,10 @@ class SpectacularAPIView(APIView):
         generator = self.generator_class(urlconf=self.urlconf, api_version=version, patterns=self.patterns)
         return Response(
             data=generator.get_schema(request=request, public=self.serve_public),
-            headers={"Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"'}
+            headers={
+                "Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"',
+                "Last-Modified": formatdate(self._get_schema_last_modified().timestamp(), usegmt=True),
+            }
         )
 
     def _get_filename(self, request, version):
