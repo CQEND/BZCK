@@ -337,12 +337,26 @@ def build_object_type(
     return schema
 
 
-def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
-    media_type_object = {'schema': schema}
+def _build_media_type_object_schema(schema) -> _SchemaType:
+    return {'schema': schema}
+
+
+def _apply_media_type_examples(media_type_object: _SchemaType, examples=None) -> _SchemaType:
     if examples:
         media_type_object['examples'] = examples
+    return media_type_object
+
+
+def _apply_media_type_encoding(media_type_object: _SchemaType, encoding=None) -> _SchemaType:
     if encoding:
         media_type_object['encoding'] = encoding
+    return media_type_object
+
+
+def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
+    media_type_object = _build_media_type_object_schema(schema)
+    media_type_object = _apply_media_type_examples(media_type_object, examples)
+    media_type_object = _apply_media_type_encoding(media_type_object, encoding)
     return media_type_object
 
 

@@ -21,9 +21,10 @@ from rest_framework import generics, serializers
 
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+    _apply_media_type_encoding, _apply_media_type_examples, _build_media_type_object_schema,
+    analyze_named_regex_pattern, build_basic_type, build_choice_field, build_media_type_object,
+    detype_pattern, follow_field_source, force_instance, get_doc, get_list_serializer,
+    get_relative_url, is_field, is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
 )
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
@@ -390,6 +391,38 @@ def test_analyze_named_regex_pattern(no_warnings, pattern, output):
 def test_unknown_basic_type(capsys):
     build_basic_type(object)
     assert 'could not resolve type for "<class \'object\'>' in capsys.readouterr().err
+
+
+def test_build_media_type_object_schema():
+    schema = {'type': 'string'}
+
+    assert _build_media_type_object_schema(schema) == {'schema': schema}
+
+
+@pytest.mark.parametrize('examples, expected', [({}, {'schema': {'type': 'string'}}), ({'sample': {}}, {'schema': {'type': 'string'}, 'examples': {'sample': {}}})])
+def test_apply_media_type_examples(examples, expected):
+    media_type_object = {'schema': {'type': 'string'}}
+
+    assert _apply_media_type_examples(media_type_object, examples) == expected
+
+
+@pytest.mark.parametrize('encoding, expected', [({}, {'schema': {'type': 'string'}}), ({'file': {'contentType': 'image/png'}}, {'schema': {'type': 'string'}, 'encoding': {'file': {'contentType': 'image/png'}}})])
+def test_apply_media_type_encoding(encoding, expected):
+    media_type_object = {'schema': {'type': 'string'}}
+
+    assert _apply_media_type_encoding(media_type_object, encoding) == expected
+
+
+def test_build_media_type_object_composes_helpers():
+    schema = {'type': 'string'}
+    examples = {'sample': {'value': 'x'}}
+    encoding = {'file': {'contentType': 'image/png'}}
+
+    assert build_media_type_object(schema, examples, encoding) == {
+        'schema': schema,
+        'examples': examples,
+        'encoding': encoding,
+    }
 
 
 def test_choicefield_choices_enum():
