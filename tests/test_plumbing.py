@@ -486,6 +486,7 @@ def test_get_doc_with_class_docstring(disable):
             assert doc == "a docstring"
 
 
+
 @pytest.mark.parametrize('disable', [False, True])
 def test_get_doc_with_function_docstring(disable):
     def my_func():
@@ -517,3 +518,46 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+from drf_spectacular.plumbing import (
+    _get_media_type_schema,
+    _apply_media_type_examples,
+    _apply_media_type_encoding,
+)
+
+def test_get_media_type_schema():
+    schema = {'type': 'string'}
+    assert _get_media_type_schema(schema) == {'schema': schema}
+
+def test_apply_media_type_examples():
+    media_type = {'schema': {'type': 'string'}}
+    examples = {'ex1': {'value': 'test'}}
+    _apply_media_type_examples(media_type, examples)
+    assert media_type['examples'] == examples
+
+    media_type_empty = {'schema': {'type': 'string'}}
+    _apply_media_type_examples(media_type_empty, None)
+    assert 'examples' not in media_type_empty
+
+def test_apply_media_type_encoding():
+    media_type = {'schema': {'type': 'string'}}
+    encoding = {'field1': {'contentType': 'image/png'}}
+    _apply_media_type_encoding(media_type, encoding)
+    assert media_type['encoding'] == encoding
+
+    media_type_empty = {'schema': {'type': 'string'}}
+    _apply_media_type_encoding(media_type_empty, None)
+    assert 'encoding' not in media_type_empty
+
+def test_build_media_type_object():
+    from drf_spectacular.plumbing import build_media_type_object
+    schema = {'type': 'string'}
+    examples = {'ex1': {'value': 'test'}}
+    encoding = {'field1': {'contentType': 'image/png'}}
+    
+    result = build_media_type_object(schema, examples, encoding)
+    assert result == {
+        'schema': schema,
+        'examples': examples,
+        'encoding': encoding
+    }
