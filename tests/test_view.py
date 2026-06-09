@@ -5,6 +5,7 @@ import yaml
 from django import __version__ as DJANGO_VERSION
 from django.http import HttpResponseRedirect
 from django.urls import path
+from django.utils.http import http_date
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.test import APIClient
@@ -80,6 +81,37 @@ def test_spectacular_view_custom_urlconf(no_warnings):
     response = APIClient().get('/api/v2/pi-fast/')
     assert response.status_code == 200
     assert response.content == b'3.1415'
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_last_modified_header(no_warnings):
+    last_modified = 1710000000
+
+    with mock.patch.object(SpectacularAPIView, '_get_schema_last_modified', return_value=last_modified):
+        response = APIClient().get('/api/v1/schema/')
+
+    assert response.status_code == 200
+    assert response.headers['Last-Modified'] == http_date(last_modified)
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_if_modified_since_returns_304():
+    last_modified = 1710000000
+
+    with mock.patch.object(SpectacularAPIView, '_get_schema_last_modified', return_value=last_modified):
+        with mock.patch.object(
+            SpectacularAPIView,
+            '_get_schema_response',
+            side_effect=AssertionError('schema should not be generated'),
+        ):
+            response = APIClient().get(
+                '/api/v1/schema/',
+                HTTP_IF_MODIFIED_SINCE=http_date(last_modified),
+            )
+
+    assert response.status_code == 304
+    assert response.content == b''
+    assert response.headers['Last-Modified'] == http_date(last_modified)
 
 
 @pytest.mark.parametrize(['accept', 'format', 'indent'], [

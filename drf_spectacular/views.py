@@ -1,11 +1,14 @@
 import json
 from collections import namedtuple
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.templatetags.static import static
 from django.utils import translation
+from django.utils.http import http_date, parse_http_date_safe
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import RedirectView
 from rest_framework.renderers import TemplateHTMLRenderer
@@ -39,6 +42,9 @@ if spectacular_settings.SERVE_AUTHENTICATION is not None:
     AUTHENTICATION_CLASSES = spectacular_settings.SERVE_AUTHENTICATION
 else:
     AUTHENTICATION_CLASSES = api_settings.DEFAULT_AUTHENTICATION_CLASSES
+
+
+SCHEMA_LAST_MODIFIED_PATH = Path(__file__).resolve().parents[1] / 'pyproject.toml'
 
 
 class SpectacularAPIView(APIView):
@@ -79,9 +85,34 @@ class SpectacularAPIView(APIView):
         with patched_settings(self.custom_settings):
             if settings.USE_I18N and request.GET.get('lang'):
                 with translation.override(request.GET.get('lang')):
-                    return self._get_schema_response(request)
+                    return self._get_cachable_schema_response(request)
             else:
-                return self._get_schema_response(request)
+                return self._get_cachable_schema_response(request)
+
+    def _get_cachable_schema_response(self, request):
+        last_modified = self._get_schema_last_modified()
+        last_modified_header = http_date(last_modified)
+
+        if self._is_not_modified(request, last_modified):
+            return HttpResponse(status=304, headers={'Last-Modified': last_modified_header})
+
+        response = self._get_schema_response(request)
+        response.headers['Last-Modified'] = last_modified_header
+        return response
+
+    def _get_schema_last_modified(self):
+        try:
+            return int(SCHEMA_LAST_MODIFIED_PATH.stat().st_mtime)
+        except OSError:
+            return int(Path(__file__).stat().st_mtime)
+
+    def _is_not_modified(self, request, last_modified):
+        if_modified_since = request.META.get('HTTP_IF_MODIFIED_SINCE')
+        if if_modified_since is None:
+            return False
+
+        parsed_if_modified_since = parse_http_date_safe(if_modified_since)
+        return parsed_if_modified_since is not None and last_modified <= parsed_if_modified_since
 
     def _get_schema_response(self, request):
         # version specified as parameter to the view always takes precedence. after
