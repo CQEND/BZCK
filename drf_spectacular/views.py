@@ -76,12 +76,49 @@ class SpectacularAPIView(APIView):
                 # explicitly resolved urlconf
                 self.urlconf = ModuleWrapper(tuple(self.urlconf))
 
+        last_modified = self._get_last_modified()
+        if request.META.get('HTTP_IF_MODIFIED_SINCE'):
+            from django.utils.http import parse_http_date
+            try:
+                if_modified_since = parse_http_date(request.META['HTTP_IF_MODIFIED_SINCE'])
+                if last_modified <= if_modified_since:
+                    from django.http import HttpResponseNotModified
+                    response = HttpResponseNotModified()
+                    from django.utils.http import http_date
+                    response['Last-Modified'] = http_date(last_modified)
+                    return response
+            except (ValueError, OverflowError):
+                pass
+
         with patched_settings(self.custom_settings):
             if settings.USE_I18N and request.GET.get('lang'):
                 with translation.override(request.GET.get('lang')):
-                    return self._get_schema_response(request)
+                    response = self._get_schema_response(request)
             else:
-                return self._get_schema_response(request)
+                response = self._get_schema_response(request)
+        
+        from django.utils.http import http_date
+        response['Last-Modified'] = http_date(last_modified)
+        return response
+
+    def _get_last_modified(self) -> float:
+        import os
+        import hashlib
+        from django.conf import settings
+        from drf_spectacular.settings import spectacular_settings
+
+        try:
+            base_dir = getattr(settings, 'BASE_DIR', None)
+            if base_dir:
+                path = os.path.join(str(base_dir), 'pyproject.toml')
+                if os.path.exists(path):
+                    return os.path.getmtime(path)
+        except Exception:
+            pass
+
+        version = getattr(spectacular_settings, 'VERSION', '0.0.0')
+        h = hashlib.md5(str(version).encode()).hexdigest()
+        return float(int(h[:8], 16))
 
     def _get_schema_response(self, request):
         # version specified as parameter to the view always takes precedence. after

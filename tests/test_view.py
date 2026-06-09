@@ -101,6 +101,23 @@ def test_spectacular_view_accept(accept, format, indent):
 
 
 @pytest.mark.urls(__name__)
+def test_spectacular_view_caching(no_warnings):
+    client = APIClient()
+    response = client.get('/api/v1/schema/')
+    assert response.status_code == 200
+    
+    if DJANGO_VERSION >= '3.2':
+        assert 'Last-Modified' in response.headers
+        last_modified = response.headers['Last-Modified']
+    else:
+        assert response.has_header('Last-Modified')
+        last_modified = response['Last-Modified']
+
+    response2 = client.get('/api/v1/schema/', HTTP_IF_MODIFIED_SINCE=last_modified)
+    assert response2.status_code == 304
+    assert response2.content == b''
+
+@pytest.mark.urls(__name__)
 def test_spectacular_view_accept_unknown(no_warnings):
     response = APIClient().get('/api/v1/schema/', HTTP_ACCEPT='application/unknown')
     assert response.status_code == 406
