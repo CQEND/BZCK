@@ -40,7 +40,8 @@ from drf_spectacular.plumbing import (
     is_list_serializer_customized, is_patched_serializer, is_serializer,
     is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
     resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
-    whitelisted,
+    whitelisted, _apply_content_type_overrides, _resolve_media_type_encoding,
+    _validate_media_type_encoding,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -1312,20 +1313,9 @@ class AutoSchema(ViewInspector):
             media_types_iter = zip(self.map_parsers(), itertools.repeat(request_serializer))
 
         for media_type, serializer in media_types_iter:
-            if isinstance(serializer, OpenApiRequest):
-                serializer, examples, encoding = serializer.request, serializer.examples, serializer.encoding
-            else:
-                encoding, examples = None, None
+            serializer, encoding, examples = _resolve_media_type_encoding(serializer, direction)
 
-            if (
-                encoding
-                and media_type != "application/x-www-form-urlencoded"
-                and not media_type.startswith('multipart')
-            ):
-                warn(
-                    'Encodings object on media types other than "application/x-www-form-urlencoded" '
-                    'or "multipart/*" have undefined behavior.'
-                )
+            _validate_media_type_encoding(media_type, encoding)
 
             examples = self._get_examples(serializer, direction, media_type, None, examples)
             schema, partial_request_body_required = self._get_request_for_media_type(serializer, direction)
@@ -1520,7 +1510,7 @@ class AutoSchema(ViewInspector):
         if not media_types:
             media_types = self.map_renderers('media_type')
 
-        media_types = modify_media_types_for_versioning(self.view, media_types)
+        media_types = _apply_content_type_overrides(media_types, self.view)
 
         return {
             **headers,

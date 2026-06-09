@@ -337,13 +337,41 @@ def build_object_type(
     return schema
 
 
-def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
+def _resolve_media_type_encoding(serializer, direction):
+    from drf_spectacular.utils import OpenApiRequest
+
+    if isinstance(serializer, OpenApiRequest):
+        return serializer.request, serializer.encoding, serializer.examples
+    return serializer, None, None
+
+
+def _validate_media_type_encoding(media_type, encoding):
+    if (
+        encoding
+        and media_type != "application/x-www-form-urlencoded"
+        and not media_type.startswith('multipart')
+    ):
+        warn(
+            'Encodings object on media types other than "application/x-www-form-urlencoded" '
+            'or "multipart/*" have undefined behavior.'
+        )
+
+
+def _build_media_type_dict(schema, examples=None, encoding=None) -> _SchemaType:
     media_type_object = {'schema': schema}
     if examples:
         media_type_object['examples'] = examples
     if encoding:
         media_type_object['encoding'] = encoding
     return media_type_object
+
+
+def _apply_content_type_overrides(media_types, view):
+    return modify_media_types_for_versioning(view, media_types)
+
+
+def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
+    return _build_media_type_dict(schema, examples, encoding)
 
 
 def build_examples_list(examples: Sequence[OpenApiExample]) -> _SchemaType:

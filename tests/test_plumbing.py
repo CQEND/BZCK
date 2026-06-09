@@ -24,7 +24,10 @@ from drf_spectacular.plumbing import (
     analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
     follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
     is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+    _resolve_media_type_encoding, _validate_media_type_encoding, _build_media_type_dict,
+    _apply_content_type_overrides, build_media_type_object,
 )
+from drf_spectacular.utils import OpenApiRequest
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
 
@@ -517,3 +520,153 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+
+def test_resolve_media_type_encoding_with_openapi_request():
+    inner_serializer = serializers.Serializer()
+    encoding = {'field1': {'contentType': 'text/plain'}}
+    examples = [mock.MagicMock()]
+    openapi_request = OpenApiRequest(
+        request=inner_serializer, encoding=encoding, examples=examples
+    )
+
+    resolved_serializer, resolved_encoding, resolved_examples = _resolve_media_type_encoding(
+        openapi_request, 'request'
+    )
+
+    assert resolved_serializer is inner_serializer
+    assert resolved_encoding == encoding
+    assert resolved_examples == examples
+
+
+def test_resolve_media_type_encoding_with_plain_serializer():
+    serializer = serializers.Serializer()
+
+    resolved_serializer, resolved_encoding, resolved_examples = _resolve_media_type_encoding(
+        serializer, 'request'
+    )
+
+    assert resolved_serializer is serializer
+    assert resolved_encoding is None
+    assert resolved_examples is None
+
+
+def test_resolve_media_type_encoding_with_openapi_request_no_encoding():
+    inner_serializer = serializers.Serializer()
+    openapi_request = OpenApiRequest(request=inner_serializer)
+
+    resolved_serializer, resolved_encoding, resolved_examples = _resolve_media_type_encoding(
+        openapi_request, 'request'
+    )
+
+    assert resolved_serializer is inner_serializer
+    assert resolved_encoding is None
+    assert resolved_examples == []
+
+
+def test_validate_media_type_encoding_with_form_urlencoded(no_warnings):
+    _validate_media_type_encoding("application/x-www-form-urlencoded", {'field': {'contentType': 'text/plain'}})
+
+
+def test_validate_media_type_encoding_with_multipart(no_warnings):
+    _validate_media_type_encoding("multipart/form-data", {'field': {'contentType': 'text/plain'}})
+
+
+def test_validate_media_type_encoding_with_invalid_media_type(capsys):
+    _validate_media_type_encoding("application/json", {'field': {'contentType': 'text/plain'}})
+    captured = capsys.readouterr()
+    assert 'Encodings object on media types other than' in captured.err
+
+
+def test_validate_media_type_encoding_with_no_encoding(no_warnings):
+    _validate_media_type_encoding("application/json", None)
+
+
+def test_validate_media_type_encoding_with_empty_encoding(no_warnings):
+    _validate_media_type_encoding("application/json", {})
+
+
+def test_build_media_type_dict_schema_only():
+    schema = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+    result = _build_media_type_dict(schema)
+    assert result == {'schema': schema}
+    assert 'examples' not in result
+    assert 'encoding' not in result
+
+
+def test_build_media_type_dict_with_examples():
+    schema = {'type': 'object'}
+    examples = {'example1': {'value': {'name': 'test'}}}
+    result = _build_media_type_dict(schema, examples=examples)
+    assert result == {'schema': schema, 'examples': examples}
+
+
+def test_build_media_type_dict_with_encoding():
+    schema = {'type': 'object'}
+    encoding = {'field1': {'contentType': 'text/plain'}}
+    result = _build_media_type_dict(schema, encoding=encoding)
+    assert result == {'schema': schema, 'encoding': encoding}
+
+
+def test_build_media_type_dict_with_all_fields():
+    schema = {'type': 'object'}
+    examples = {'example1': {'value': {'name': 'test'}}}
+    encoding = {'field1': {'contentType': 'text/plain'}}
+    result = _build_media_type_dict(schema, examples=examples, encoding=encoding)
+    assert result == {'schema': schema, 'examples': examples, 'encoding': encoding}
+
+
+def test_build_media_type_dict_with_empty_examples():
+    schema = {'type': 'object'}
+    result = _build_media_type_dict(schema, examples={})
+    assert result == {'schema': schema}
+    assert 'examples' not in result
+
+
+def test_build_media_type_dict_with_empty_encoding():
+    schema = {'type': 'object'}
+    result = _build_media_type_dict(schema, encoding={})
+    assert result == {'schema': schema}
+    assert 'encoding' not in result
+
+
+def test_build_media_type_object_delegates_to_build_media_type_dict():
+    schema = {'type': 'object'}
+    examples = {'example1': {'value': {'name': 'test'}}}
+    encoding = {'field1': {'contentType': 'text/plain'}}
+
+    result_from_helper = _build_media_type_dict(schema, examples, encoding)
+    result_from_public = build_media_type_object(schema, examples, encoding)
+
+    assert result_from_helper == result_from_public
+
+
+def test_apply_content_type_overrides_without_versioning():
+    class MockView:
+        versioning_class = None
+
+    media_types = ['application/json', 'text/html']
+    result = _apply_content_type_overrides(media_types, MockView())
+    assert result == ['application/json', 'text/html']
+
+
+def test_apply_content_type_overrides_with_versioning():
+    from rest_framework import versioning
+
+    class MockRequest:
+        accepted_media_type = 'application/json; version=2'
+
+    class MockView:
+        versioning_class = versioning.AcceptHeaderVersioning
+        request = MockRequest()
+
+        class DefaultVersionClass:
+            default_version = '1'
+
+        versioning_class.default_version = '1'
+        versioning_class.version_param = 'version'
+
+    media_types = ['application/json']
+    result = _apply_content_type_overrides(media_types, MockView())
+    assert len(result) == 1
+    assert 'version=2' in result[0]
