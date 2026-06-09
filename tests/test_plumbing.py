@@ -21,9 +21,10 @@ from rest_framework import generics, serializers
 
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+    _build_media_type_core, _build_media_type_examples, _resolve_media_type_encoding,
+    analyze_named_regex_pattern, build_basic_type, build_choice_field, build_media_type_object,
+    detype_pattern, follow_field_source, force_instance, get_doc, get_list_serializer,
+    get_relative_url, is_field, is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
 )
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
@@ -517,3 +518,77 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+
+def test_build_media_type_core():
+    schema = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+    result = _build_media_type_core(schema)
+    assert result == {'schema': schema}
+
+
+def test_build_media_type_examples_none():
+    assert _build_media_type_examples(None) is None
+
+
+def test_build_media_type_examples_empty():
+    assert _build_media_type_examples([]) is None
+
+
+def test_build_media_type_examples_with_value():
+    examples = {'Ex1': {'value': 'test'}}
+    result = _build_media_type_examples(examples)
+    assert result == examples
+
+
+def test_resolve_media_type_encoding_none():
+    assert _resolve_media_type_encoding(None) is None
+
+
+def test_resolve_media_type_encoding_empty():
+    assert _resolve_media_type_encoding({}) is None
+
+
+def test_resolve_media_type_encoding_with_value():
+    encoding = {'field': {'style': 'form', 'explode': True}}
+    result = _resolve_media_type_encoding(encoding)
+    assert result == encoding
+
+
+def test_build_media_type_object_schema_only():
+    schema = {'type': 'object'}
+    result = build_media_type_object(schema)
+    assert result == {'schema': schema}
+
+
+def test_build_media_type_object_with_examples():
+    schema = {'type': 'object'}
+    examples = {'Ex1': {'value': 'test'}}
+    result = build_media_type_object(schema, examples=examples)
+    assert result == {'schema': schema, 'examples': examples}
+
+
+def test_build_media_type_object_with_encoding():
+    schema = {'type': 'object'}
+    encoding = {'field': {'style': 'form'}}
+    result = build_media_type_object(schema, encoding=encoding)
+    assert result == {'schema': schema, 'encoding': encoding}
+
+
+def test_build_media_type_object_with_all():
+    schema = {'type': 'object'}
+    examples = {'Ex1': {'value': 'test'}}
+    encoding = {'field': {'style': 'form'}}
+    result = build_media_type_object(schema, examples=examples, encoding=encoding)
+    assert result == {'schema': schema, 'examples': examples, 'encoding': encoding}
+
+
+def test_build_media_type_object_empty_examples():
+    schema = {'type': 'object'}
+    result = build_media_type_object(schema, examples=[])
+    assert result == {'schema': schema}
+
+
+def test_build_media_type_object_empty_encoding():
+    schema = {'type': 'object'}
+    result = build_media_type_object(schema, encoding={})
+    assert result == {'schema': schema}
