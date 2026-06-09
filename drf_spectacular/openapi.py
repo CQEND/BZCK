@@ -3,7 +3,7 @@ import functools
 import itertools
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import uritemplate
 from django.core import exceptions as django_exceptions
@@ -371,10 +371,37 @@ class AutoSchema(ViewInspector):
 
     def get_request_serializer(self) -> Optional[_SerializerType]:
         """ override this for custom behaviour """
-        return self._get_serializer()
+        return self._get_request_serializer()
 
     def get_response_serializers(self) -> Optional[_SerializerType]:
         """ override this for custom behaviour """
+        return self._get_response_serializers()
+
+    def _get_request_serializer(self, **kwargs: Any) -> Any:
+        return self._get_serializer_by_direction('request', **kwargs)
+
+    def _get_response_serializers(self, **kwargs: Any) -> Any:
+        return self._get_serializer_by_direction('response', **kwargs)
+
+    def _get_serializer_by_direction(self, direction: Direction, **kwargs: Any) -> Any:
+        """
+        Resolve request/response serializer overrides for the given direction.
+
+        The helper preserves method-scoped ``@extend_schema`` overrides by returning the
+        provided directional override as-is when it is in scope. This includes response
+        mappings keyed by status code as well as request mappings keyed by media type.
+        When no override applies, it delegates to ``fallback`` if given and otherwise
+        introspects the view serializer via ``_get_serializer()``.
+        """
+        assert direction in ('request', 'response')
+
+        serializer = kwargs.get('request', empty) if direction == 'request' else kwargs.get('responses', empty)
+        if serializer is not empty and kwargs.get('in_scope', True):
+            return serializer
+
+        fallback: Optional[Callable[[], Any]] = kwargs.get('fallback')
+        if fallback:
+            return fallback()
         return self._get_serializer()
 
     def get_tags(self) -> List[str]:
