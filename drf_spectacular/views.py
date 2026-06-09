@@ -1,5 +1,8 @@
+import hashlib
 import json
 from collections import namedtuple
+from datetime import datetime
+from email.utils import formatdate, parsedate_to_datetime
 from importlib import import_module
 from typing import Any, Dict, List, Optional, Type
 
@@ -88,10 +91,39 @@ class SpectacularAPIView(APIView):
         # that we try to source version through the schema view's own versioning_class.
         version = self.api_version or request.version or self._get_version_parameter(request)
         generator = self.generator_class(urlconf=self.urlconf, api_version=version, patterns=self.patterns)
+        
+        last_modified = self._get_last_modified()
+        last_modified_str = formatdate(usegmt=True, timeval=last_modified.timestamp())
+        
+        if_modified_since = request.META.get('HTTP_IF_MODIFIED_SINCE')
+        if if_modified_since:
+            try:
+                if_modified_since_dt = parsedate_to_datetime(if_modified_since)
+                if last_modified <= if_modified_since_dt:
+                    return Response(
+                        status=304,
+                        headers={"Last-Modified": last_modified_str}
+                    )
+            except (ValueError, TypeError):
+                pass
+        
         return Response(
             data=generator.get_schema(request=request, public=self.serve_public),
-            headers={"Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"'}
+            headers={
+                "Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"',
+                "Last-Modified": last_modified_str
+            }
         )
+
+    def _get_last_modified(self):
+        version = spectacular_settings.VERSION
+        settings_hash = hashlib.md5(
+            json.dumps(spectacular_settings._defaults, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        combined = version + settings_hash
+        hash_value = int(hashlib.sha256(combined.encode()).hexdigest(), 16)
+        timestamp = hash_value % (2**31)
+        return datetime.fromtimestamp(timestamp, tz=datetime.now().astimezone().tzinfo)
 
     def _get_filename(self, request, version):
         return "{title}{version}.{suffix}".format(

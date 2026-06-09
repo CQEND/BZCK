@@ -1,3 +1,5 @@
+from datetime import datetime
+from email.utils import formatdate, parsedate_to_datetime
 from unittest import mock
 
 import pytest
@@ -194,3 +196,57 @@ def test_swagger_oauth_redirect_view(get_params):
     else:
         assert response.headers['Location'] ==\
                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_last_modified_header(no_warnings):
+    response = APIClient().get('/api/v1/schema/')
+    assert response.status_code == 200
+    assert 'Last-Modified' in response.headers
+    last_modified = response.headers['Last-Modified']
+    assert last_modified is not None and len(last_modified) > 0
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_304_not_modified(no_warnings):
+    first_response = APIClient().get('/api/v1/schema/')
+    assert first_response.status_code == 200
+    assert 'Last-Modified' in first_response.headers
+    
+    last_modified_value = first_response.headers['Last-Modified']
+    
+    second_response = APIClient().get(
+        '/api/v1/schema/',
+        HTTP_IF_MODIFIED_SINCE=last_modified_value
+    )
+    assert second_response.status_code == 304
+    assert 'Last-Modified' in second_response.headers
+    assert second_response.content == b''
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_200_when_modified(no_warnings):
+    first_response = APIClient().get('/api/v1/schema/')
+    assert first_response.status_code == 200
+    assert 'Last-Modified' in first_response.headers
+    
+    last_modified_value = first_response.headers['Last-Modified']
+    last_modified_dt = parsedate_to_datetime(last_modified_value)
+    
+    older_date = last_modified_dt.replace(year=last_modified_dt.year - 1)
+    older_date_str = formatdate(usegmt=True, timeval=older_date.timestamp())
+    
+    second_response = APIClient().get(
+        '/api/v1/schema/',
+        HTTP_IF_MODIFIED_SINCE=older_date_str
+    )
+    assert second_response.status_code == 200
+    assert second_response.content.startswith(b'openapi: 3.0.3\n')
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_view_no_if_modified_since(no_warnings):
+    response = APIClient().get('/api/v1/schema/')
+    assert response.status_code == 200
+    assert 'Last-Modified' in response.headers
+    assert response.content.startswith(b'openapi: 3.0.3\n')
