@@ -337,13 +337,149 @@ def build_object_type(
     return schema
 
 
-def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
-    media_type_object = {'schema': schema}
-    if examples:
-        media_type_object['examples'] = examples
-    if encoding:
-        media_type_object['encoding'] = encoding
+def _get_media_type_schema(
+        schema: Union[_SchemaType, 'serializers.BaseSerializer', Any],
+        direction: Optional[str] = None,
+        serializer: Any = None,
+) -> Optional[_SchemaType]:
+    """
+    Extract and normalize the core schema for a media type object.
+
+    Handles raw schema dicts, basic types, type hints, and DRF serializers by
+    converting them to a consistent OpenAPI schema representation. Returns
+    ``None`` when the provided input cannot be resolved to a meaningful schema.
+    """
+    if schema is None:
+        return None
+    if isinstance(schema, dict):
+        return schema
+    if is_basic_type(schema):
+        return build_basic_type(schema)
+    if is_higher_order_type_hint(schema):
+        return resolve_type_hint(schema)
+    if is_serializer(schema):
+        from drf_spectacular.openapi import AutoSchema  # type: ignore
+        # Best effort via module-level helper when no explicit resolver provided.
+        return {'$ref': f'#/components/schemas/{type(schema).__name__}'}
+    return schema
+
+
+def _resolve_media_type_encoding(
+        encoding: Optional[Dict[str, Any]],
+        media_type: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Validate and resolve an OpenAPI ``encoding`` object for the given media type.
+
+    Encoding objects are only well-defined for ``application/x-www-form-urlencoded``
+    and ``multipart/*`` media types per the OpenAPI specification. Emits a warning
+    when encoding is supplied for incompatible media types so integrators know that
+    behaviour is undefined.
+    """
+    if not encoding:
+        return None
+    if media_type is not None and encoding:
+        if (
+            media_type != 'application/x-www-form-urlencoded'
+            and not media_type.startswith('multipart')
+        ):
+            warn(
+                'Encodings object on media types other than "application/x-www-form-urlencoded" '
+                'or "multipart/*" have undefined behavior.'
+            )
+    resolved: Dict[str, Any] = {}
+    for prop_name, prop_encoding in encoding.items():
+        if isinstance(prop_encoding, dict):
+            resolved[prop_name] = {k: v for k, v in prop_encoding.items() if v is not None}
+        else:
+            resolved[prop_name] = prop_encoding
+    return resolved
+
+
+def _build_media_type_examples(
+        examples: Optional[Sequence[Any]],
+) -> Optional[_SchemaType]:
+    """
+    Build an OpenAPI ``examples`` object for a media type.
+
+    Accepts either a pre-built mapping (dict) or a sequence of :class:`OpenApiExample`
+    objects. Returns ``None`` for empty input so callers can skip adding the
+    ``examples`` key to the parent media type object.
+    """
+    if not examples:
+        return None
+    if isinstance(examples, dict):
+        return examples
+    # Support raw sequences of example-like objects by delegating to the
+    # standardized builder utility.
+    try:
+        return build_examples_list(examples)
+    except Exception:
+        return None
+
+
+def _apply_content_type_overrides(
+        media_type_object: _SchemaType,
+        media_type: Optional[str],
+        overrides: Optional[Dict[str, Any]] = None,
+) -> _SchemaType:
+    """
+    Apply per-content-type overrides to a media type object.
+
+    ``overrides`` may contain any legal Media Type Object key and takes precedence
+    over generated values. When the override value is ``None`` the corresponding
+    key is removed from the media type object, which is useful for stripping
+    fields that do not apply to a specific content type (e.g. ``schema`` for
+    raw ``text/plain`` bodies).
+    """
+    if not overrides:
+        return media_type_object
+    for key, value in overrides.items():
+        if value is None:
+            media_type_object.pop(key, None)
+        else:
+            media_type_object[key] = value
+    # Media-type-specific adjustments derived from the negotiated content-type.
+    if media_type and media_type.startswith('multipart/form-data'):
+        media_type_object.setdefault(
+            'encoding',
+            {prop: {'contentType': 'application/octet-stream'} for prop in media_type_object.get('schema', {}).get('properties', {}) if media_type_object.get('schema', {}).get('properties', {}).get(prop, {}).get('format') == 'binary'}
+        )
     return media_type_object
+
+
+def build_media_type_object(
+        schema,
+        examples=None,
+        encoding=None,
+        media_type: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+) -> _SchemaType:
+    """
+    Build an OpenAPI `Media Type Object <https://swagger.io/specification/#media-type-object>`_.
+
+    The object is assembled from a core ``schema`` plus optional ``examples`` and
+    ``encoding`` mappings. Content-type-specific overrides may be supplied via
+    ``overrides`` to tweak the resulting object for a particular ``media_type``
+    (e.g. ``multipart/form-data``).
+
+    Internally delegates to the helper functions :func:`_get_media_type_schema`,
+    :func:`_resolve_media_type_encoding`, :func:`_build_media_type_examples` and
+    :func:`_apply_content_type_overrides` so each responsibility can be tested
+    and reused in isolation.
+    """
+    resolved_schema = _get_media_type_schema(schema)
+    media_type_object: _SchemaType = {'schema': resolved_schema}
+
+    resolved_examples = _build_media_type_examples(examples)
+    if resolved_examples:
+        media_type_object['examples'] = resolved_examples
+
+    resolved_encoding = _resolve_media_type_encoding(encoding, media_type)
+    if resolved_encoding:
+        media_type_object['encoding'] = resolved_encoding
+
+    return _apply_content_type_overrides(media_type_object, media_type, overrides)
 
 
 def build_examples_list(examples: Sequence[OpenApiExample]) -> _SchemaType:

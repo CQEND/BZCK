@@ -21,10 +21,13 @@ from rest_framework import generics, serializers
 
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+    _apply_content_type_overrides, _build_media_type_examples, _get_media_type_schema,
+    _resolve_media_type_encoding, analyze_named_regex_pattern, build_basic_type,
+    build_choice_field, build_media_type_object, detype_pattern, follow_field_source,
+    force_instance, get_doc, get_list_serializer, get_relative_url, is_field, is_serializer,
+    resolve_type_hint, safe_ref, set_query_parameters,
 )
+from drf_spectacular.utils import OpenApiExample
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
 
@@ -517,3 +520,151 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+
+# ---------------------------------------------------------------------------
+# Tests for the media-type helper functions extracted from build_media_type_object.
+# ---------------------------------------------------------------------------
+
+
+def test_build_media_type_object_minimal():
+    # Schema-only usage preserves the schema key (no optional fields emitted).
+    schema = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+    result = build_media_type_object(schema)
+    assert result == {'schema': schema}
+    assert 'examples' not in result
+    assert 'encoding' not in result
+
+
+def test_build_media_type_object_with_examples_dict():
+    schema = {'type': 'string'}
+    examples = {'default': {'value': 'hello'}}
+    result = build_media_type_object(schema, examples=examples)
+    assert result['examples'] == examples
+
+
+def test_build_media_type_object_with_encoding():
+    schema = {'type': 'object'}
+    encoding = {'file': {'contentType': 'application/octet-stream'}}
+    result = build_media_type_object(
+        schema, encoding=encoding, media_type='multipart/form-data',
+    )
+    assert result['encoding'] == encoding
+
+
+def test_get_media_type_schema_none_returns_none():
+    assert _get_media_type_schema(None) is None
+
+
+def test_get_media_type_schema_dict_passthrough():
+    schema = {'type': 'object'}
+    assert _get_media_type_schema(schema) is schema
+
+
+def test_get_media_type_schema_basic_type():
+    from drf_spectacular.types import OpenApiTypes
+    result = _get_media_type_schema(OpenApiTypes.INT)
+    assert result is not None
+    assert result.get('type') in ('integer', 'number')
+
+
+def test_resolve_media_type_encoding_empty_input():
+    assert _resolve_media_type_encoding(None) is None
+    assert _resolve_media_type_encoding({}) is None
+
+
+def test_resolve_media_type_encoding_preserves_valid_encoding():
+    encoding = {'file': {'contentType': 'application/octet-stream'}}
+    assert _resolve_media_type_encoding(
+        encoding, 'multipart/form-data') == encoding
+
+
+def test_resolve_media_type_encoding_warns_on_incompatible_media_type():
+    encoding = {'file': {'contentType': 'application/octet-stream'}}
+    with mock.patch('drf_spectacular.drainage.warn') as mocked_warn:
+        result = _resolve_media_type_encoding(encoding, 'application/json')
+    mocked_warn.assert_called_once()
+    assert result == encoding
+
+
+def test_resolve_media_type_encoding_strips_none_values():
+    encoding = {'file': {'contentType': 'image/png', 'headers': None}}
+    result = _resolve_media_type_encoding(encoding, 'multipart/form-data')
+    assert result == {'file': {'contentType': 'image/png'}}
+
+
+def test_build_media_type_examples_none_and_empty():
+    assert _build_media_type_examples(None) is None
+    assert _build_media_type_examples([]) is None
+
+
+def test_build_media_type_examples_dict_passthrough():
+    examples = {'default': {'value': 'ok'}}
+    assert _build_media_type_examples(examples) is examples
+
+
+def test_build_media_type_examples_from_openapi_example_objects():
+    examples = [
+        OpenApiExample(name='example1', value='hello'),
+    ]
+    result = _build_media_type_examples(examples)
+    assert result is not None
+    assert 'Example1' in result
+    assert result['Example1']['value'] == 'hello'
+
+
+def test_apply_content_type_overrides_no_overrides_is_identity():
+    obj = {'schema': {'type': 'string'}}
+    assert _apply_content_type_overrides(obj, 'application/json') is obj
+    assert obj == {'schema': {'type': 'string'}}
+
+
+def test_apply_content_type_overrides_adds_key():
+    obj = {'schema': {'type': 'string'}}
+    result = _apply_content_type_overrides(
+        obj, 'application/json', overrides={'description': 'raw string body'}
+    )
+    assert result['description'] == 'raw string body'
+
+
+def test_apply_content_type_overrides_removes_key_when_value_is_none():
+    obj = {
+        'schema': {'type': 'object'},
+        'examples': {'foo': {'value': 1}},
+    }
+    result = _apply_content_type_overrides(
+        obj, 'text/plain', overrides={'schema': None}
+    )
+    assert 'schema' not in result
+    assert 'examples' in result
+
+
+def test_apply_content_type_overrides_override_value_takes_precedence():
+    obj = {'schema': {'type': 'object'}}
+    result = _apply_content_type_overrides(
+        obj,
+        'application/json', overrides={'schema': {'type': 'string'}}
+    )
+    assert result['schema'] == {'type': 'string'}
+
+
+def test_build_media_type_object_accepts_media_type_and_overrides():
+    # Verify that the combined path through helpers produces expected shape.
+    result = build_media_type_object(
+        {'type': 'object'},
+        examples={'demo': {'value': 'ok'}},
+        encoding={'file': {'contentType': 'application/octet-stream'}},
+        media_type='multipart/form-data',
+    )
+    assert result['schema'] == {'type': 'object'}
+    assert result['examples'] == {'demo': {'value': 'ok'}}
+    assert result['encoding'] == {'file': {'contentType': 'application/octet-stream'}}
+
+
+def test_build_media_type_object_overrides_override_existing_keys():
+    result = build_media_type_object(
+        {'type': 'object'},
+        examples={'demo': {'value': 'ok'}},
+        overrides={'schema': {'type': 'string'}},
+    )
+    assert result['schema'] == {'type': 'string'}
