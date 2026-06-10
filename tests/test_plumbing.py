@@ -21,10 +21,12 @@ from rest_framework import generics, serializers
 
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
+    analyze_named_regex_pattern, build_basic_type, build_choice_field,
+    build_parameter_type, detype_pattern,
     follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
     is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
 )
+from drf_spectacular.utils import OpenApiParameter
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
 
@@ -517,3 +519,115 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+
+def test_build_parameter_type_basic():
+    schema = {'type': 'string'}
+    result = build_parameter_type('foo', schema, 'query', required=True, description='my desc', deprecated=True)
+    assert result['in'] == 'query'
+    assert result['name'] == 'foo'
+    assert result['schema'] == {'type': 'string'}
+    assert result['required'] is True
+    assert result['description'] == 'my desc'
+    assert result['deprecated'] is True
+
+
+def test_build_parameter_type_path_location():
+    schema = {'type': 'integer', 'nullable': True, 'default': 42, 'readOnly': True, 'writeOnly': False}
+    result = build_parameter_type('pk', schema, OpenApiParameter.PATH)
+    assert result['in'] == 'path'
+    assert result['name'] == 'pk'
+    assert result['required'] is True
+    assert 'nullable' not in result['schema']
+    assert 'readOnly' not in result['schema']
+    assert 'writeOnly' not in result['schema']
+    assert 'default' not in result['schema']
+    assert result['schema'] == {'type': 'integer'}
+
+
+def test_build_parameter_type_explode_true():
+    schema = {'type': 'array', 'items': {'type': 'string'}}
+    result = build_parameter_type('tags', schema, 'query', explode=True)
+    assert result['explode'] is True
+    assert result['schema']['type'] == 'array'
+
+
+def test_build_parameter_type_explode_false():
+    schema = {'type': 'array', 'items': {'type': 'string'}}
+    result = build_parameter_type('tags', schema, 'query', explode=False)
+    assert result['explode'] is False
+
+
+def test_build_parameter_type_style_deep_object():
+    schema = {'type': 'object', 'properties': {}}
+    result = build_parameter_type('filter', schema, 'query', style='deepObject', explode=True)
+    assert result['style'] == 'deepObject'
+    assert result['explode'] is True
+
+
+def test_build_parameter_type_enum_on_scalar():
+    schema = {'type': 'string'}
+    result = build_parameter_type('color', schema, 'query', enum=['red', 'blue', 'green'])
+    assert result['schema']['enum'] == ['blue', 'green', 'red']
+
+
+def test_build_parameter_type_enum_on_array():
+    schema = {'type': 'array', 'items': {'type': 'string'}}
+    result = build_parameter_type('colors', schema, 'query', enum=['red', 'blue', 'green'])
+    assert 'enum' not in result['schema']
+    assert result['schema']['items']['enum'] == ['blue', 'green', 'red']
+
+
+def test_build_parameter_type_pattern_on_scalar():
+    schema = {'type': 'string'}
+    result = build_parameter_type('code', schema, 'query', pattern='^[a-z]+$')
+    assert result['schema']['pattern'] == '^[a-z]+$'
+
+
+def test_build_parameter_type_pattern_on_array():
+    schema = {'type': 'array', 'items': {'type': 'string'}}
+    result = build_parameter_type('codes', schema, 'query', pattern='^[a-z]+$')
+    assert 'pattern' not in result['schema']
+    assert result['schema']['items']['pattern'] == '^[a-z]+$'
+
+
+def test_build_parameter_type_allow_blank_false_string():
+    schema = {'type': 'string'}
+    result = build_parameter_type('name', schema, 'query', allow_blank=False)
+    assert result['schema']['minLength'] == 1
+
+
+def test_build_parameter_type_allow_blank_false_non_string():
+    schema = {'type': 'integer'}
+    result = build_parameter_type('count', schema, 'query', allow_blank=False)
+    assert 'minLength' not in result['schema']
+
+
+def test_build_parameter_type_allow_blank_false_existing_minlength():
+    schema = {'type': 'string', 'minLength': 3}
+    result = build_parameter_type('name', schema, 'query', allow_blank=False)
+    assert result['schema']['minLength'] == 3
+
+
+def test_build_parameter_type_default_query():
+    schema = {'type': 'string'}
+    result = build_parameter_type('name', schema, 'query', default='default_value')
+    assert result['schema']['default'] == 'default_value'
+
+
+def test_build_parameter_type_default_path_excluded():
+    schema = {'type': 'string'}
+    result = build_parameter_type('pk', schema, OpenApiParameter.PATH, default='ignored')
+    assert 'default' not in result['schema']
+
+
+def test_build_parameter_type_examples():
+    schema = {'type': 'string'}
+    result = build_parameter_type('name', schema, 'query', examples=[{'value': 'ex1'}, {'value': 'ex2'}])
+    assert result['examples'] == [{'value': 'ex1'}, {'value': 'ex2'}]
+
+
+def test_build_parameter_type_extensions():
+    schema = {'type': 'string'}
+    result = build_parameter_type('name', schema, 'query', extensions={'x-custom': 'val'})
+    assert result['x-custom'] == 'val'
