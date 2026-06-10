@@ -498,3 +498,83 @@ def test_filterset_enum_includes_null_label(no_warnings):
 
     assert category_typed_multi_type_schema['name'] == 'category_typed_multi'
     assert category_typed_multi_type_schema['schema']['items']['enum'] == ["a", "b"]
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_from_explicit_choices(no_warnings):
+    class ChoiceFilterModel(models.Model):
+        name = models.CharField(max_length=100)
+        category = models.CharField(max_length=10, choices=(('A', 'aaa'), ('B', 'bbb')))
+
+    class ChoiceFilterModelSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = ChoiceFilterModel
+            fields = '__all__'
+
+    class ChoiceFilterModelFilterSet(FilterSet):
+        status = ChoiceFilter(choices=(('active', 'Active'), ('inactive', 'Inactive')))
+        priority = ChoiceFilter(choices=((1, 'Low'), (2, 'Medium'), (3, 'High')))
+        multi_status = MultipleChoiceFilter(choices=(('active', 'Active'), ('inactive', 'Inactive')))
+
+        class Meta:
+            model = ChoiceFilterModel
+            fields = []
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = ChoiceFilterModel.objects.all()
+        serializer_class = ChoiceFilterModelSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = ChoiceFilterModelFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+
+    status_param = next(p for p in params if p['name'] == 'status')
+    assert status_param['schema']['type'] == 'string'
+    assert status_param['schema']['enum'] == ['active', 'inactive']
+
+    priority_param = next(p for p in params if p['name'] == 'priority')
+    assert priority_param['schema']['type'] == 'integer'
+    assert priority_param['schema']['enum'] == [1, 2, 3]
+
+    multi_status_param = next(p for p in params if p['name'] == 'multi_status')
+    assert multi_status_param['schema']['type'] == 'array'
+    assert multi_status_param['schema']['items']['type'] == 'string'
+    assert multi_status_param['schema']['items']['enum'] == ['active', 'inactive']
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_type_from_choices_not_model(no_warnings):
+    class TypeMismatchModel(models.Model):
+        category = models.CharField(max_length=10, choices=(('A', 'aaa'), ('B', 'bbb')))
+
+    class TypeMismatchSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = TypeMismatchModel
+            fields = '__all__'
+
+    class TypeMismatchFilterSet(FilterSet):
+        cat_int = ChoiceFilter(field_name='category', choices=((1, 'One'), (2, 'Two')))
+        cat_multi_int = MultipleChoiceFilter(field_name='category', choices=((1, 'One'), (2, 'Two')))
+
+        class Meta:
+            model = TypeMismatchModel
+            fields = []
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = TypeMismatchModel.objects.all()
+        serializer_class = TypeMismatchSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = TypeMismatchFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+
+    cat_int_param = next(p for p in params if p['name'] == 'cat_int')
+    assert cat_int_param['schema']['type'] == 'integer'
+    assert cat_int_param['schema']['enum'] == [1, 2]
+
+    cat_multi_int_param = next(p for p in params if p['name'] == 'cat_multi_int')
+    assert cat_multi_int_param['schema']['type'] == 'array'
+    assert cat_multi_int_param['schema']['items']['type'] == 'integer'
+    assert cat_multi_int_param['schema']['items']['enum'] == [1, 2]

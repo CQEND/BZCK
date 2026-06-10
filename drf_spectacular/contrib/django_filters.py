@@ -3,7 +3,8 @@ from django.db import models
 from drf_spectacular.drainage import add_trace_message, get_override, has_override, warn
 from drf_spectacular.extensions import OpenApiFilterExtension
 from drf_spectacular.plumbing import (
-    build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
+    build_array_type, build_basic_type, build_choice_description_list,
+    build_parameter_type,
     follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
     is_field,
 )
@@ -130,15 +131,20 @@ class DjangoFilterExtension(OpenApiFilterExtension):
             else:
                 schema = build_basic_type(OpenApiTypes.NUMBER)
         elif isinstance(filter_field, (filters.ChoiceFilter, filters.MultipleChoiceFilter)):
-            try:
-                schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
-            except Exception:
-                if filter_choices and is_basic_type(type(filter_choices[0])):
-                    # fallback to type guessing from first choice element
-                    schema = build_basic_type(type(filter_choices[0]))
-                else:
+            if filter_choices:
+                schema = self._get_schema_from_choices(filter_choices)
+                try:
+                    model_schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
+                    if 'description' in model_schema and 'description' not in schema:
+                        schema['description'] = model_schema['description']
+                except Exception:
+                    pass
+            else:
+                try:
+                    schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
+                except Exception:
                     warn(
-                        f'Unable to guess choice types from values, filter method\'s type hint '
+                        f'Unable to guess choice types, filter method\'s type hint '
                         f'or find "{field_name}" in model. Defaulting to string.'
                     )
                     schema = build_basic_type(OpenApiTypes.STR)
@@ -234,6 +240,22 @@ class DjangoFilterExtension(OpenApiFilterExtension):
                 choices.append(filter_field.field.null_value)
 
             return choices
+
+    def _get_schema_from_choices(self, choices):
+        non_null_choices = [c for c in choices if c is not None and c != '']
+        if not non_null_choices:
+            schema = build_basic_type(OpenApiTypes.STR)
+        elif all(isinstance(c, bool) for c in non_null_choices):
+            schema = build_basic_type(OpenApiTypes.BOOL)
+        elif all(isinstance(c, int) for c in non_null_choices):
+            schema = build_basic_type(OpenApiTypes.INT)
+        elif all(isinstance(c, (int, float)) for c in non_null_choices):
+            schema = build_basic_type(OpenApiTypes.NUMBER)
+        elif all(isinstance(c, str) for c in non_null_choices):
+            schema = build_basic_type(OpenApiTypes.STR)
+        else:
+            schema = build_basic_type(OpenApiTypes.STR)
+        return schema
 
     def _get_model_field(self, filter_field, model):
         if not filter_field.field_name:
