@@ -369,13 +369,33 @@ class AutoSchema(ViewInspector):
             auths.append({})
         return auths
 
+    def _get_serializer_by_direction(self, direction: Direction, **kwargs: Any) -> Optional[_SerializerType]:
+        """
+        Internal helper that resolves the serializer for a given direction.
+
+        Centralizes the common logic shared between request and response serializer
+        resolution (e.g. view attribute introspection, ``@extend_schema`` override
+        handling, multi-serializer mapping).  Subclasses that need direction-aware
+        behaviour should override this method rather than overriding
+        :meth:`get_request_serializer` and :meth:`get_response_serializers`
+        separately.
+
+        :param direction: ``'request'`` or ``'response'`` – indicates whether the
+            serializer will be used for the request body or the response body.
+        :param kwargs: reserved for future use by subclasses.
+        :returns: a serializer class/instance, ``None``, or any of the types
+            accepted by ``@extend_schema(request=…)`` /
+            ``@extend_schema(responses=…)``.
+        """
+        return self._get_serializer()
+
     def get_request_serializer(self) -> Optional[_SerializerType]:
         """ override this for custom behaviour """
-        return self._get_serializer()
+        return self._get_serializer_by_direction('request')
 
     def get_response_serializers(self) -> Optional[_SerializerType]:
         """ override this for custom behaviour """
-        return self._get_serializer()
+        return self._get_serializer_by_direction('response')
 
     def get_tags(self) -> List[str]:
         """ override this for custom behaviour """

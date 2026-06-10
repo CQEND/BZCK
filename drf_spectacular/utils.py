@@ -475,15 +475,12 @@ def extend_schema(
                     return super().get_examples() + examples
                 return super().get_examples()
 
-            def get_request_serializer(self):
-                if request is not empty and is_in_scope(self):
+            def _get_serializer_by_direction(self, direction, **kwargs):
+                if direction == 'request' and request is not empty and is_in_scope(self):
                     return request
-                return super().get_request_serializer()
-
-            def get_response_serializers(self):
-                if responses is not empty and is_in_scope(self):
+                if direction == 'response' and responses is not empty and is_in_scope(self):
                     return responses
-                return super().get_response_serializers()
+                return super()._get_serializer_by_direction(direction, **kwargs)
 
             def get_description(self):
                 if description and is_in_scope(self):
