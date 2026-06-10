@@ -4,10 +4,11 @@ import pytest
 import yaml
 from django import __version__ as DJANGO_VERSION
 from django.http import HttpResponseRedirect
+from django.test import override_settings
 from django.urls import path
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
@@ -124,6 +125,14 @@ def test_spectacular_ui_view(no_warnings, ui):
         assert b'<title>Swagger</title>' in response.content
         assert spectacular_settings.SWAGGER_UI_DIST.encode() in response.content
     assert b'"/api/v2/schema/"' in response.content
+
+
+@override_settings(SPECTACULAR_SETTINGS={'REDOC_TEMPLATE_NAME': 'custom_redoc.html'})
+@pytest.mark.urls(__name__)
+def test_spectacular_redoc_view_custom_template_name(no_warnings):
+    response = SpectacularRedocView.as_view()(APIRequestFactory().get('/api/v2/schema/redoc/'))
+    assert response.status_code == 200
+    assert response.template_name == 'custom_redoc.html'
 
 
 @pytest.mark.urls(__name__)

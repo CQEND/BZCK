@@ -60,3 +60,26 @@ in your project files.
         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
         ...
     }
+
+Example: Redoc settings
+-----------------------
+
+We currently support passing through all basic Redoc `configuration parameters <https://redocly.com/docs/redoc/config/>`_.
+If you need to customize the surrounding HTML, you can point the Redoc view at your own template.
+This is useful for adding custom branding, changing the page title, or inserting additional JavaScript.
+
+.. code:: python
+
+    SPECTACULAR_SETTINGS = {
+        ...
+        # available Redoc configuration parameters
+        # https://redocly.com/docs/redoc/config/
+        "REDOC_UI_SETTINGS": {
+            "hideDownloadButton": True,
+            "nativeScrollbars": True,
+            ...
+        },
+        # override the HTML template used by SpectacularRedocView
+        "REDOC_TEMPLATE_NAME": "your_app/custom_redoc.html", # defaults to drf_spectacular/redoc.html
+        ...
+    }
