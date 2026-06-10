@@ -208,6 +208,109 @@ def get_lib_doc_excludes():
     ]
 
 
+def is_coroutine_function(obj: Any) -> bool:
+    """
+    safely test whether an object is an async callable. returns ``False`` for
+    regular callables, bound methods or non-callables.
+    """
+    if obj is None:
+        return False
+    try:
+        return inspect.iscoroutinefunction(obj)
+    except Exception:
+        return False
+
+
+def _resolve_coroutine(coro: Any) -> Any:
+    """
+    best-effort synchronous execution of a coroutine. schema generation always
+    runs in a sync context. if a view overrides e.g. ``get_queryset`` with an
+    async variant, calling it yields a ``Coroutine`` object rather than the
+    expected value. this helper unwraps such coroutines where possible so that
+    schema introspection keeps working.
+
+    The strategy is:
+
+    1. if there is no running event loop, spin up a short-lived one with
+       ``asyncio.run`` (safe for tests and management commands).
+    2. if there is an event loop (e.g. a request context under ``asyncio.run``),
+       fall back to ``asgiref.sync.async_to_sync`` which handles nested loops.
+    3. when neither is available, emit a warning and return ``None`` so that
+       callers can fall back to attribute-based inspection (``view.queryset``).
+    """
+    try:
+        import asyncio
+    except ImportError:  # pragma: no cover - asyncio is always available in 3.7+
+        return None
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None or not loop.is_running():
+        # fresh event loop - asyncio.run is cheap and reliable
+        try:
+            return asyncio.run(coro)
+        except Exception as exc:  # pragma: no cover - defensive
+            warn(
+                f'Failed to execute async callable while generating the schema '
+                f'(asyncio.run raised: {exc}). Falling back to attribute-based '
+                f'inspection. Consider providing a serializer explicitly via '
+                f'@extend_schema.'
+            )
+            return None
+
+    try:
+        from asgiref.sync import async_to_sync
+    except ImportError:  # pragma: no cover
+        warn(
+            'Encountered an async view method during schema generation, but '
+            'asgiref is not available so the coroutine cannot be executed in '
+            'the current sync context. Install asgiref or provide serializer '
+            'information explicitly via @extend_schema.'
+        )
+        return None
+
+    try:
+        return async_to_sync(lambda: coro)()
+    except Exception as exc:  # pragma: no cover - defensive
+        warn(
+            f'Failed to execute async callable while generating the schema '
+            f'(async_to_sync raised: {exc}). Falling back to attribute-based '
+            f'inspection. Consider providing a serializer explicitly via '
+            f'@extend_schema.'
+        )
+        return None
+
+
+def safe_call_view_method(view: Any, method_name: str, default: Any = None, **kwargs):
+    """
+    call ``view.<method_name>(**kwargs)`` in a way that transparently handles
+    both sync and async implementations. used by the schema generator whenever
+    it has to invoke a user-supplied view method (``get_queryset``,
+    ``get_serializer``, ``get_serializer_class``, ...).
+
+    async implementations are unwrapped synchronously on a best-effort basis
+    (see :func:`_resolve_coroutine`). any exception raised by the underlying
+    method is re-raised unchanged so that callers can keep using try/except for
+    fallback behaviour.
+    """
+    method = getattr(view, method_name, None)
+    if method is None:
+        return default
+    if not callable(method):
+        return default
+
+    if is_coroutine_function(method):
+        filtered = filter_supported_arguments(method, **kwargs)
+        result = method(**filtered)
+        return _resolve_coroutine(result)
+
+    filtered = filter_supported_arguments(method, **kwargs)
+    return method(**filtered)
+
+
 def get_view_model(view, emit_warnings=True):
     """
     obtain model from view via view's queryset. try safer view attribute first
@@ -219,7 +322,10 @@ def get_view_model(view, emit_warnings=True):
         return model
 
     try:
-        return view.get_queryset().model
+        queryset = safe_call_view_method(view, 'get_queryset')
+        if queryset is None:
+            return None
+        return queryset.model
     except Exception as exc:
         if emit_warnings:
             warn(
@@ -1493,7 +1599,10 @@ def filter_supported_arguments(func, **kwargs):
 
 def build_serializer_context(view) -> typing.Dict[str, Any]:
     try:
-        return view.get_serializer_context()
+        context = safe_call_view_method(view, 'get_serializer_context')
+        if isinstance(context, dict):
+            return context
+        return {'request': view.request}
     except:  # noqa
         return {'request': view.request}
 

@@ -35,12 +35,12 @@ from drf_spectacular.plumbing import (
     build_examples_list, build_generic_type, build_listed_example_value, build_media_type_object,
     build_mocked_view, build_object_type, build_parameter_type, build_serializer_context,
     filter_supported_arguments, follow_field_source, follow_model_field_lookup, force_instance,
-    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_basic_serializer,
-    is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
-    is_list_serializer_customized, is_patched_serializer, is_serializer,
+    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model,
+    is_basic_serializer, is_basic_type, is_field, is_higher_order_type_hint,
+    is_list_serializer, is_list_serializer_customized, is_patched_serializer, is_serializer,
     is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
-    resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
-    whitelisted,
+    resolve_regex_path_parameter, resolve_type_hint, safe_call_view_method, safe_ref,
+    sanitize_specification_extensions, whitelisted,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -324,7 +324,7 @@ class AutoSchema(ViewInspector):
         """
         auths = []
 
-        for authenticator in self.view.get_authenticators():
+        for authenticator in safe_call_view_method(self.view, 'get_authenticators', default=[]) or []:
             if not whitelisted(authenticator, spectacular_settings.AUTHENTICATION_WHITELIST, True):
                 continue
 
@@ -362,7 +362,7 @@ class AutoSchema(ViewInspector):
         if spectacular_settings.SECURITY:
             auths.extend(spectacular_settings.SECURITY)
 
-        perms = [p.__class__ for p in self.view.get_permissions()]
+        perms = [p.__class__ for p in safe_call_view_method(self.view, 'get_permissions', default=[]) or []]
         if permissions.AllowAny in perms:
             auths.append({})
         elif permissions.IsAuthenticatedOrReadOnly in perms and self.method in permissions.SAFE_METHODS:
@@ -1184,7 +1184,7 @@ class AutoSchema(ViewInspector):
 
     def map_parsers(self) -> List[Any]:
         return list(dict.fromkeys([
-            p.media_type for p in self.view.get_parsers()
+            p.media_type for p in safe_call_view_method(self.view, 'get_parsers', default=[]) or []
             if whitelisted(p, spectacular_settings.PARSER_WHITELIST)
         ]))
 
@@ -1200,7 +1200,7 @@ class AutoSchema(ViewInspector):
 
         return list(dict.fromkeys([
             getattr(r, attribute).split(';')[0]
-            for r in self.view.get_renderers()
+            for r in safe_call_view_method(self.view, 'get_renderers', default=[]) or []
             if use_renderer(r) and hasattr(r, attribute)
         ]))
 
@@ -1212,15 +1212,17 @@ class AutoSchema(ViewInspector):
                 # try to circumvent queryset issues with calling get_serializer. if view has NOT
                 # overridden get_serializer, its safe to use get_serializer_class.
                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
-                    return view.get_serializer_class()(context=context)
-                return view.get_serializer(context=context)
+                    serializer_class = safe_call_view_method(view, 'get_serializer_class')
+                    return serializer_class(context=context)
+                return safe_call_view_method(view, 'get_serializer', context=context)
             elif isinstance(view, APIView):
                 # APIView does not implement the required interface, but be lenient and make
                 # good guesses before giving up and emitting a warning.
                 if callable(getattr(view, 'get_serializer', None)):
-                    return view.get_serializer(context=context)
+                    return safe_call_view_method(view, 'get_serializer', context=context)
                 elif callable(getattr(view, 'get_serializer_class', None)):
-                    return view.get_serializer_class()(context=context)
+                    serializer_class = safe_call_view_method(view, 'get_serializer_class')
+                    return serializer_class(context=context)
                 elif hasattr(view, 'serializer_class'):
                     return view.serializer_class
                 else:
