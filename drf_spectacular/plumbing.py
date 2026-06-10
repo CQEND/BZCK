@@ -399,6 +399,10 @@ def build_parameter_type(
         schema['explode'] = explode
     if style is not None:
         schema['style'] = style
+    
+    if schema['schema'].get('type') == 'array' and explode is True:
+        schema.setdefault('style', 'form')
+
     if enum:
         # in case of array schema, enum makes little sense on the array itself
         if schema['schema'].get('type') == 'array':
@@ -415,6 +419,8 @@ def build_parameter_type(
         schema['schema']['default'] = default
     if not allow_blank and schema['schema'].get('type') == 'string':
         schema['schema']['minLength'] = schema['schema'].get('minLength', 1)
+    elif allow_blank and location == 'query':
+        schema['allowEmptyValue'] = True
     if examples:
         schema['examples'] = examples
     if extensions:
