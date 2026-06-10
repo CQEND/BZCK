@@ -455,6 +455,32 @@ def test_filter_on_listapiview(no_warnings):
 
 
 @pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_generation(no_warnings):
+    class MyFilterSet(FilterSet):
+        my_choice = ChoiceFilter(choices=(('A', 'aaa'), ('B', 'bbb')))
+
+        class Meta:
+            model = Product
+            fields = []
+
+    class XViewSet(viewsets.GenericViewSet):
+        queryset = Product.objects.all()
+        serializer_class = SimpleSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = MyFilterSet
+
+        def list(self, request, *args, **kwargs):
+            pass
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+    
+    choice_param = next(p for p in params if p['name'] == 'my_choice')
+    assert choice_param['schema']['enum'] == ['A', 'B']
+    assert choice_param['schema']['type'] == 'string'
+
+
+@pytest.mark.contrib('django_filter')
 @override_settings(
     FILTERS_NULL_CHOICE_VALUE="NULL VALUE",
 )

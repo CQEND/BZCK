@@ -131,7 +131,20 @@ class DjangoFilterExtension(OpenApiFilterExtension):
                 schema = build_basic_type(OpenApiTypes.NUMBER)
         elif isinstance(filter_field, (filters.ChoiceFilter, filters.MultipleChoiceFilter)):
             try:
-                schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
+                # prioritize explicit choices over model field extraction
+                is_model_choice = isinstance(
+                    filter_field, (filters.ModelChoiceFilter, filters.ModelMultipleChoiceFilter)
+                )
+                if not is_model_choice and 'choices' in filter_field.extra and not callable(filter_field.extra.get('choices')):
+                    from rest_framework import serializers
+                    from drf_spectacular.plumbing import build_choice_field
+                    drf_field = serializers.ChoiceField(choices=filter_field.extra['choices'])
+                    if getattr(filter_field.field, 'null_label', None) is not None:
+                        drf_field.allow_null = True
+                        drf_field.choices[filter_field.field.null_value] = filter_field.field.null_label
+                    schema = build_choice_field(drf_field)
+                else:
+                    schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
             except Exception:
                 if filter_choices and is_basic_type(type(filter_choices[0])):
                     # fallback to type guessing from first choice element
@@ -162,6 +175,8 @@ class DjangoFilterExtension(OpenApiFilterExtension):
         # explicit filter choices may disable enum retrieved from model
         if not schema_from_override and filter_choices is not None:
             enum = filter_choices
+        if enum == []:
+            enum = None
 
         description = schema.pop('description', None)
         if not schema_from_override:
