@@ -498,3 +498,54 @@ def test_filterset_enum_includes_null_label(no_warnings):
 
     assert category_typed_multi_type_schema['name'] == 'category_typed_multi'
     assert category_typed_multi_type_schema['schema']['items']['enum'] == ["a", "b"]
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_explicit_choices_build_choice_field(no_warnings):
+    """Ensure ChoiceFilter with explicit (non-callable) choices produces
+    the correct ``enum`` values via ``build_choice_field`` handling. Also
+    ensures that ``ModelChoiceFilter`` and ``MultipleChoiceFilter`` keep
+    working as expected."""
+    from django_filters import FilterSet
+    from django_filters.rest_framework import (
+        ChoiceFilter, DjangoFilterBackend, ModelChoiceFilter, MultipleChoiceFilter,
+    )
+
+    def _get_choices(*args, **kwargs):
+        return (('x', 'X'), ('y', 'Y'), ('z', 'Z'))
+
+    class MyFilterSet(FilterSet):
+        static_choice = ChoiceFilter(
+            field_name='category', choices=(('a', 'A'), ('b', 'B'))
+        )
+        callable_choice = ChoiceFilter(
+            field_name='category', choices=_get_choices
+        )
+        multi_choice = MultipleChoiceFilter(
+            field_name='category', choices=(('a', 'A'), ('b', 'B'))
+        )
+        model_choice = ModelChoiceFilter(
+            field_name='category', queryset=Product.objects.all()
+        )
+
+        class Meta:
+            model = Product
+            fields = []
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = Product.objects.all()
+        serializer_class = ProductSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = MyFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = {p['name']: p for p in schema['paths']['/x/']['get']['parameters']}
+
+    assert params['static_choice']['schema']['enum'] == ['a', 'b']
+    # callable choices: enum may be omitted (empty list means no enum) but we
+    # should at least not break and at best produce the enum values.
+    assert 'callable_choice' in params
+    # MultipleChoiceFilter should have proper enum on the items.
+    assert params['multi_choice']['schema']['items']['enum'] == ['a', 'b']
+    # ModelChoiceFilter should at least be present and not break.
+    assert 'model_choice' in params

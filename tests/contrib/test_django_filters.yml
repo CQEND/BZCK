@@ -16,6 +16,9 @@ paths:
         name: cat_callable
         schema:
           type: string
+          enum:
+          - A
+          - B
         description: some category description
       - in: query
         name: category
