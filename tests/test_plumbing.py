@@ -18,15 +18,20 @@ from django.db import models
 from django.urls import include, path
 from django.utils.functional import lazystr
 from rest_framework import generics, serializers
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from drf_spectacular.openapi import AutoSchema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from drf_spectacular.plumbing import (
     analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
     follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
     is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
 )
 from drf_spectacular.validation import validate_schema
-from tests import generate_schema
+from tests import generate_schema, get_response_schema
 
 
 def test_get_list_serializer_preserves_context():
@@ -517,3 +522,86 @@ def test_get_doc_with_method_docstring(disable):
             assert doc == ""
         else:
             assert doc == "a docstring"
+
+
+def test_async_api_view_discovery(no_warnings):
+    class XSerializer(serializers.Serializer):
+        id = serializers.IntegerField()
+        name = serializers.CharField()
+
+    class AsyncXView(APIView):
+        authentication_classes = []
+
+        @extend_schema(
+            parameters=[OpenApiParameter('id', OpenApiTypes.INT, OpenApiParameter.PATH)],
+            responses={200: XSerializer},
+            summary="Async view test",
+            description="This is an asynchronous view test"
+        )
+        async def get(self, request):
+            return Response({"id": 1, "name": "test"})
+
+    schema = generate_schema('x', view=AsyncXView)
+    operation = schema['paths']['/x/{id}']['get']
+    assert operation['operationId'] == 'x_retrieve'
+    assert operation['summary'] == 'Async view test'
+    assert 'description' in operation
+    operation_schema = get_response_schema(operation)
+    assert '$ref' in operation_schema and 'type' not in operation_schema
+
+
+def test_async_api_view_function_based(no_warnings):
+    @extend_schema(responses={200: OpenApiTypes.INT}, description="Async function-based view")
+    @api_view(['GET'])
+    async def async_view(request):
+        return Response(42)
+
+    schema = generate_schema('/x/', view_function=async_view)
+    operation = schema['paths']['/x/']['get']
+    assert operation['operationId'] == 'x_retrieve'
+    operation_schema = get_response_schema(operation)
+    assert operation_schema['type'] == 'integer'
+
+
+def test_async_generic_api_view(no_warnings):
+    class XModel(models.Model):
+        name = models.CharField(max_length=100)
+
+    class XSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = XModel
+            fields = ['id', 'name']
+
+    class AsyncXListView(generics.ListAPIView):
+        queryset = XModel.objects.none()
+        serializer_class = XSerializer
+
+        async def get(self, request, *args, **kwargs):
+            return super().get(request, *args, **kwargs)
+
+    schema = generate_schema('x', view=AsyncXListView)
+    operation = schema['paths']['/x']['get']
+    assert operation['operationId'] == 'x_list'
+    operation_schema = get_response_schema(operation)
+    assert operation_schema['type'] == 'array'
+    assert '$ref' in operation_schema['items']
+
+
+def test_async_get_serializer_override(no_warnings):
+    class XSerializer(serializers.Serializer):
+        id = serializers.IntegerField()
+
+    class AsyncCustomView(APIView):
+        serializer_class = XSerializer
+
+        async def get_serializer(self, context=None):
+            return self.serializer_class(context=context)
+
+        @extend_schema(responses={200: XSerializer})
+        async def get(self, request):
+            return Response({"id": 1})
+
+    schema = generate_schema('x', view=AsyncCustomView)
+    operation = schema['paths']['/x']['get']
+    operation_schema = get_response_schema(operation)
+    assert '$ref' in operation_schema

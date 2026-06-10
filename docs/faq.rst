@@ -480,3 +480,92 @@ To work around this, use ``lazy_serializer`` to lazily load the ``Serializer``.
         def get_nested_boxes(self, instance: Box):
             nested_boxes = instance.nested_boxes.all()
             return BoxSerializer(nested_boxes, many=True).data
+
+Async View Support
+------------------
+
+Since DRF 3.12, Django REST Framework supports asynchronous views via
+``async def`` handlers and ``APIView`` subclasses. drf-spectacular can
+generate schema for these async views.
+
+Basic usage
+^^^^^^^^^^^
+
+Async APIView with ``@extend_schema``:
+
+.. code-block:: python
+
+    from rest_framework.views import APIView
+    from rest_framework.response import Response
+    from drf_spectacular.utils import extend_schema
+
+    class MyAsyncView(APIView):
+        @extend_schema(
+            responses={200: MySerializer},
+            summary="An async endpoint",
+        )
+        async def get(self, request):
+            data = await some_async_operation()
+            return Response(MySerializer(data).data)
+
+Async function-based views (``@api_view``):
+
+.. code-block:: python
+
+    from rest_framework.decorators import api_view
+    from drf_spectacular.utils import extend_schema
+
+    @extend_schema(responses={200: MySerializer})
+    @api_view(['GET'])
+    async def my_async_view(request):
+        return Response({"data": "value"})
+
+Note that ``@extend_schema`` must be placed **above** ``@api_view``
+(i.e. the outer decorator) for DRF to correctly pick up the schema annotations.
+
+Async GenericAPIView:
+
+.. code-block:: python
+
+    from rest_framework import generics
+
+    class MyAsyncListView(generics.ListAPIView):
+        queryset = MyModel.objects.all()
+        serializer_class = MySerializer
+
+        async def get(self, request, *args, **kwargs):
+            return super().get(request, *args, **kwargs)
+
+Limitations and caveats
+^^^^^^^^^^^^^^^^^^^^^^^
+
+- **Schema generation is synchronous**: While your view handlers can
+  be ``async def``, the schema introspection itself runs synchronously.
+  ``drf-spectacular`` extracts type hints, docstrings, serializer
+  classes, and other metadata without invoking your async handlers.
+
+- **Async ``get_serializer`` / ``get_queryset``**: If you override
+  ``get_serializer()`` or ``get_queryset()`` as async functions,
+  drf-spectacular will automatically detect the coroutine result
+  and run it in a temporary event loop via ``asyncio.run()``.
+  However, if there is an already running event loop (e.g. during
+  an ASGI request), it will fall back to the synchronous
+  ``get_serializer_class()`` / ``serializer_class`` to avoid
+  nested event loop issues. You can avoid this entirely by
+  keeping ``get_serializer()`` and ``get_queryset()`` synchronous
+  (which is the default in DRF).
+
+- **``@extend_schema`` decorator placement**: For async function-based
+  views, place ``@extend_schema`` **before** ``@api_view``. For
+  class-based views, place ``@extend_schema`` directly on the
+  async method as usual.
+
+- **ViewSet actions**: Async ``@action`` methods on ViewSets are
+  supported in the same way. Use ``@extend_schema`` on the
+  action method as you would for synchronous actions.
+
+.. note::
+    The generated schema for async views is identical to that of
+    their synchronous counterparts, assuming the same serializers
+    and annotations are used. There is no behavioral difference
+    in the output schema.

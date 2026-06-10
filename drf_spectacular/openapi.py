@@ -1,5 +1,7 @@
+import asyncio
 import copy
 import functools
+import inspect
 import itertools
 import re
 from collections import defaultdict
@@ -121,6 +123,31 @@ class AutoSchema(ViewInspector):
             operation['callbacks'] = callbacks
 
         return operation
+
+    def _get_view_action_method(self):
+        if hasattr(self.view, 'action'):
+            return getattr(self.view, self.view.action, None)
+        return getattr(self.view, self.method.lower(), None)
+
+    def _is_async_view(self) -> bool:
+        action_method = self._get_view_action_method()
+        return inspect.iscoroutinefunction(action_method)
+
+    def _run_async_if_needed(self, result):
+        if inspect.iscoroutine(result):
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    warn(
+                        f'Cannot run async method on view "{self.view.__class__.__name__}" '
+                        f'because there is already a running event loop. '
+                        f'Falling back to synchronous alternatives.'
+                    )
+                    return None
+            except RuntimeError:
+                pass
+            return asyncio.run(result)
+        return result
 
     def is_excluded(self) -> bool:
         """ override this for custom behaviour """
@@ -1213,14 +1240,17 @@ class AutoSchema(ViewInspector):
                 # overridden get_serializer, its safe to use get_serializer_class.
                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
                     return view.get_serializer_class()(context=context)
-                return view.get_serializer(context=context)
+                result = view.get_serializer(context=context)
+                return self._run_async_if_needed(result)
             elif isinstance(view, APIView):
                 # APIView does not implement the required interface, but be lenient and make
                 # good guesses before giving up and emitting a warning.
                 if callable(getattr(view, 'get_serializer', None)):
-                    return view.get_serializer(context=context)
+                    result = view.get_serializer(context=context)
+                    return self._run_async_if_needed(result)
                 elif callable(getattr(view, 'get_serializer_class', None)):
-                    return view.get_serializer_class()(context=context)
+                    result = view.get_serializer_class()(context=context)
+                    return self._run_async_if_needed(result)
                 elif hasattr(view, 'serializer_class'):
                     return view.serializer_class
                 else:
