@@ -498,3 +498,102 @@ def test_filterset_enum_includes_null_label(no_warnings):
 
     assert category_typed_multi_type_schema['name'] == 'category_typed_multi'
     assert category_typed_multi_type_schema['schema']['items']['enum'] == ["a", "b"]
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_with_explicit_choices(no_warnings):
+    class XModel(models.Model):
+        name = models.CharField(max_length=100)
+
+    class XSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = XModel
+            fields = '__all__'
+
+    class XFilterSet(FilterSet):
+        status = ChoiceFilter(
+            field_name='name',
+            choices=((1, 'One'), (2, 'Two'), (3, 'Three'))
+        )
+
+        class Meta:
+            model = XModel
+            fields = []
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = XModel.objects.all()
+        serializer_class = XSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = XFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+    assert len(params) == 1
+    assert params[0]['name'] == 'status'
+    assert params[0]['schema']['type'] == 'integer'
+    assert params[0]['schema']['enum'] == [1, 2, 3]
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_with_callable_choices(no_warnings):
+    class XModel(models.Model):
+        name = models.CharField(max_length=100, choices=(('A', 'aaa'), ('B', 'b')))
+
+    class XSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = XModel
+            fields = '__all__'
+
+    def get_choices():
+        return (('C', 'ccc'), ('D', 'ddd'))
+
+    class XFilterSet(FilterSet):
+        name = ChoiceFilter(field_name='name', choices=get_choices)
+
+        class Meta:
+            model = XModel
+            fields = []
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = XModel.objects.all()
+        serializer_class = XSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = XFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+    assert len(params) == 1
+    assert params[0]['name'] == 'name'
+    assert 'enum' not in params[0]['schema']
+
+
+@pytest.mark.contrib('django_filter')
+def test_choice_filter_enum_from_model_field(no_warnings):
+    class XModel(models.Model):
+        status = models.CharField(
+            max_length=10,
+            choices=(('active', 'Active'), ('inactive', 'Inactive'))
+        )
+
+    class XSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = XModel
+            fields = '__all__'
+
+    class XFilterSet(FilterSet):
+        class Meta:
+            model = XModel
+            fields = ['status']
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = XModel.objects.all()
+        serializer_class = XSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = XFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    params = schema['paths']['/x/']['get']['parameters']
+    assert len(params) == 1
+    assert params[0]['name'] == 'status'
+    assert params[0]['schema']['type'] == 'string'
+    assert params[0]['schema']['enum'] == ['active', 'inactive']
