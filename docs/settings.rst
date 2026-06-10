@@ -60,3 +60,33 @@ in your project files.
         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
         ...
     }
+
+Example: Redoc UI settings
+--------------------------
+
+All basic Redoc `configuration parameters <https://redocly.com/docs/redoc/config/>`_ are
+passed through via ``REDOC_UI_SETTINGS``.
+
+You may also override the Redoc template path for full control over the rendered HTML
+(e.g. to add a company logo, change the document title, or inject custom JavaScript).
+Place a custom template in your project's ``templates/`` directory and point to it:
+
+.. code:: python
+
+    SPECTACULAR_SETTINGS = {
+        ...
+        # pass configuration to Redoc.init()
+        "REDOC_UI_SETTINGS": {
+            "expandSingleSchemaField": True,
+            "hideLoading": True,
+            ...
+        },
+        # host your own Redoc bundle: https://github.com/Redocly/redoc/releases
+        "REDOC_DIST": "https://cdn.jsdelivr.net/npm/redoc@latest",  # default
+        # override the default template to customize the rendered page
+        "REDOC_TEMPLATE_NAME": "my_project/redoc.html",  # default is "drf_spectacular/redoc.html"
+        ...
+    }
+
+The default template lives at
+`drf_spectacular/templates/drf_spectacular/redoc.html <https://github.com/tfranzel/drf-spectacular/blob/master/drf_spectacular/templates/drf_spectacular/redoc.html>`_.

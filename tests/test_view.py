@@ -194,3 +194,28 @@ def test_swagger_oauth_redirect_view(get_params):
     else:
         assert response.headers['Location'] ==\
                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
+
+
+@pytest.mark.urls(__name__)
+def test_spectacular_redoc_view_template_name_default(no_warnings):
+    # default template should be 'drf_spectacular/redoc.html'
+    view = SpectacularRedocView()
+    assert view.get_template_names() == ['drf_spectacular/redoc.html']
+
+    # also verify the rendered response works with the default template
+    response = APIClient().get('/api/v2/schema/redoc/')
+    assert response.status_code == 200
+    assert response.content.startswith(b'<!DOCTYPE html>')
+
+
+@mock.patch(
+    'drf_spectacular.settings.spectacular_settings.REDOC_TEMPLATE_NAME',
+    'custom_redoc.html'
+)
+@pytest.mark.urls(__name__)
+def test_spectacular_redoc_view_template_name_custom(no_warnings):
+    from drf_spectacular.settings import spectacular_settings as s
+    assert s.REDOC_TEMPLATE_NAME == 'custom_redoc.html'
+
+    view = SpectacularRedocView()
+    assert view.get_template_names() == ['custom_redoc.html']

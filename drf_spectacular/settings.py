@@ -83,6 +83,9 @@ SPECTACULAR_DEFAULTS: Dict[str, Any] = {
     'SWAGGER_UI_DIST': 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@latest',
     'SWAGGER_UI_FAVICON_HREF': 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@latest/favicon-32x32.png',
     'REDOC_DIST': 'https://cdn.jsdelivr.net/npm/redoc@latest',
+    # Template path for the Redoc UI. Override this to provide a custom
+    # template (e.g. for adding a company logo, custom title, or extra JS).
+    'REDOC_TEMPLATE_NAME': 'drf_spectacular/redoc.html',
 
     # Append OpenAPI objects to path and components in addition to the generated objects
     'APPEND_PATHS': {},

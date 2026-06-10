@@ -241,6 +241,9 @@ class SpectacularRedocView(APIView):
     template_name: str = 'drf_spectacular/redoc.html'
     title: Optional[str] = spectacular_settings.TITLE
 
+    def get_template_names(self):
+        return [spectacular_settings.REDOC_TEMPLATE_NAME]
+
     @extend_schema(exclude=True)
     def get(self, request, *args, **kwargs):
         return Response(
@@ -250,7 +253,7 @@ class SpectacularRedocView(APIView):
                 'schema_url': self._get_schema_url(request),
                 'settings': self._dump(spectacular_settings.REDOC_UI_SETTINGS),
             },
-            template_name=self.template_name
+            template_name=self.get_template_names()[0]
         )
 
     def _dump(self, data):
