@@ -398,6 +398,78 @@ attribute ``swagger_fake_view`` and simply return an empty queryset of the corre
             # your usual logic
 
 
+Does *drf-spectacular* support async views (``async def`` / ``AsyncAPIView``)?
+-------------------------------------------------------------------------------
+
+DRF 3.12+ supports async views via ``async def`` methods on ``APIView`` and ``GenericAPIView``.
+*drf-spectacular* supports async views with the following behavior:
+
+- **Async handler methods** (``async def get``, ``async def post``, etc.) are fully supported.
+  The schema generation correctly extracts descriptions, operation IDs, and other metadata
+  from async methods just as it does from sync methods.
+
+- **``serializer_class`` attribute** works as expected with async views. This is the recommended
+  way to specify serializers for async views.
+
+- **:py:func:`@extend_schema <drf_spectacular.utils.extend_schema>`** works seamlessly with
+  async views and async methods.
+
+- **Async ``get_serializer()`` / ``get_serializer_class()`` / ``get_queryset()``** cannot be
+  called during schema generation because *drf-spectacular* operates in a synchronous context
+  and cannot ``await`` coroutines. When these methods are detected as async, a warning is
+  emitted and the library falls back to the ``serializer_class`` attribute or ``@extend_schema``
+  decoration.
+
+**Recommended patterns for async views:**
+
+.. code-block:: python
+
+    # Pattern 1: Use serializer_class (recommended)
+    class MyAsyncView(APIView):
+        serializer_class = MySerializer
+
+        async def get(self, request):
+            ...
+
+    # Pattern 2: Use @extend_schema
+    @extend_schema(responses=MySerializer)
+    class MyAsyncView(APIView):
+        async def get(self, request):
+            ...
+
+    # Pattern 3: Use @extend_schema on individual methods
+    class MyAsyncView(APIView):
+        @extend_schema(responses=MySerializer)
+        async def get(self, request):
+            ...
+
+        @extend_schema(request=MySerializer, responses=MySerializer)
+        async def post(self, request):
+            ...
+
+**Anti-patterns to avoid:**
+
+.. code-block:: python
+
+    # DON'T: async get_serializer_class without serializer_class fallback
+    class BadAsyncView(APIView):
+        async def get_serializer_class(self):  # Cannot be called during schema gen!
+            return MySerializer
+
+    # DO: Provide serializer_class as fallback
+    class GoodAsyncView(APIView):
+        serializer_class = MySerializer  # Fallback for schema generation
+
+        async def get_serializer_class(self):
+            # Your runtime logic here
+            return MySerializer
+
+.. note::
+  Schema generation is inherently a synchronous process. If your async view relies on
+  async-only code paths for serializer discovery, you must provide a synchronous
+  fallback via ``serializer_class`` or ``@extend_schema``.
+
+
 How to serve in-memory generated files or files in general outside ``FileField``
 --------------------------------------------------------------------------------
 

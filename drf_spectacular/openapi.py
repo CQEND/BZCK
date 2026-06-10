@@ -35,12 +35,12 @@ from drf_spectacular.plumbing import (
     build_examples_list, build_generic_type, build_listed_example_value, build_media_type_object,
     build_mocked_view, build_object_type, build_parameter_type, build_serializer_context,
     filter_supported_arguments, follow_field_source, follow_model_field_lookup, force_instance,
-    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_basic_serializer,
-    is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
+    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_async_callable,
+    is_basic_serializer, is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
     is_list_serializer_customized, is_patched_serializer, is_serializer,
-    is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
-    resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
-    whitelisted,
+    is_trivial_string_variation, is_view_method_async, modify_media_types_for_versioning,
+    resolve_django_path_parameter, resolve_regex_path_parameter, resolve_type_hint, safe_ref,
+    sanitize_specification_extensions, whitelisted,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -1209,19 +1209,42 @@ class AutoSchema(ViewInspector):
         context = build_serializer_context(view)
         try:
             if isinstance(view, GenericAPIView):
-                # try to circumvent queryset issues with calling get_serializer. if view has NOT
-                # overridden get_serializer, its safe to use get_serializer_class.
                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
-                    return view.get_serializer_class()(context=context)
-                return view.get_serializer(context=context)
+                    get_serializer_class = view.get_serializer_class
+                    if is_async_callable(get_serializer_class):
+                        warn(
+                            'get_serializer_class() is an async function. drf-spectacular cannot '
+                            'call async methods during schema generation. Falling back to '
+                            'serializer_class attribute or @extend_schema.'
+                        )
+                    else:
+                        return get_serializer_class()(context=context)
+                get_serializer = view.get_serializer
+                if is_async_callable(get_serializer):
+                    warn(
+                        'get_serializer() is an async function. drf-spectacular cannot '
+                        'call async methods during schema generation. Falling back to '
+                        'serializer_class attribute or @extend_schema.'
+                    )
+                else:
+                    return get_serializer(context=context)
+                if hasattr(view, 'serializer_class') and view.serializer_class is not None:
+                    return view.serializer_class
+                return None
             elif isinstance(view, APIView):
-                # APIView does not implement the required interface, but be lenient and make
-                # good guesses before giving up and emitting a warning.
-                if callable(getattr(view, 'get_serializer', None)):
-                    return view.get_serializer(context=context)
-                elif callable(getattr(view, 'get_serializer_class', None)):
-                    return view.get_serializer_class()(context=context)
-                elif hasattr(view, 'serializer_class'):
+                get_serializer = getattr(view, 'get_serializer', None)
+                get_serializer_class = getattr(view, 'get_serializer_class', None)
+                if callable(get_serializer) and not is_async_callable(get_serializer):
+                    return get_serializer(context=context)
+                elif callable(get_serializer_class) and not is_async_callable(get_serializer_class):
+                    return get_serializer_class()(context=context)
+                elif is_async_callable(get_serializer) or is_async_callable(get_serializer_class):
+                    warn(
+                        'get_serializer()/get_serializer_class() is an async function. '
+                        'drf-spectacular cannot call async methods during schema generation. '
+                        'Falling back to serializer_class attribute or @extend_schema.'
+                    )
+                if hasattr(view, 'serializer_class'):
                     return view.serializer_class
                 else:
                     error(

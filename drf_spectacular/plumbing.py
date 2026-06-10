@@ -190,6 +190,23 @@ def assert_basic_serializer(serializer) -> None:
     )
 
 
+def is_async_callable(func) -> bool:
+    if inspect.iscoroutinefunction(func):
+        return True
+    if hasattr(func, '__func__') and inspect.iscoroutinefunction(func.__func__):
+        return True
+    if inspect.isgeneratorfunction(func):
+        return False
+    return False
+
+
+def is_view_method_async(view, method_name: str) -> bool:
+    method = getattr(view, method_name, None)
+    if method is None:
+        return False
+    return is_async_callable(method)
+
+
 @cache
 def get_lib_doc_excludes():
     # do not import on package level due to potential import recursion when loading
@@ -218,8 +235,18 @@ def get_view_model(view, emit_warnings=True):
     if model is not None:
         return model
 
+    get_queryset = getattr(view, 'get_queryset', None)
+    if is_async_callable(get_queryset):
+        if emit_warnings:
+            warn(
+                'get_queryset() is an async function. drf-spectacular cannot call async '
+                'methods during schema generation. Please set "queryset = Model.objects.none()" '
+                'on the view or use @extend_schema instead.'
+            )
+        return None
+
     try:
-        return view.get_queryset().model
+        return get_queryset().model
     except Exception as exc:
         if emit_warnings:
             warn(
