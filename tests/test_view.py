@@ -126,6 +126,17 @@ def test_spectacular_ui_view(no_warnings, ui):
     assert b'"/api/v2/schema/"' in response.content
 
 
+from django.test import override_settings
+
+@override_settings(SPECTACULAR_SETTINGS={'REDOC_TEMPLATE_NAME': 'custom_redoc.html'})
+@pytest.mark.urls(__name__)
+@mock.patch('rest_framework.renderers.TemplateHTMLRenderer.render')
+def test_spectacular_redoc_custom_template(mock_render):
+    mock_render.return_value = b"<html></html>"
+    response = APIClient().get('/api/v2/schema/redoc/')
+    assert response.template_name == 'custom_redoc.html'
+
+
 @pytest.mark.urls(__name__)
 def test_spectacular_swagger_ui_alternate(no_warnings):
     # first request for the html

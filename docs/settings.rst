@@ -35,12 +35,13 @@ The following are known to be effective:
 
 - ``SCHEMA_COERCE_PATH_PK``
 
-Example: SwaggerUI settings
----------------------------
+Example: SwaggerUI and Redoc settings
+-------------------------------------
 
 We currently support passing through all basic SwaggerUI `configuration parameters <https://swagger.io/docs/open-source-tools/swagger-ui/usage/configuration/>`_.
 For more customization options (e.g. CSS, JS functions), you can extend or override the
 `SwaggerUI template <https://github.com/tfranzel/drf-spectacular/blob/master/drf_spectacular/templates/drf_spectacular/swagger_ui.html>`_
+or the `Redoc template <https://github.com/tfranzel/drf-spectacular/blob/master/drf_spectacular/templates/drf_spectacular/redoc.html>`_
 in your project files.
 
 .. code:: python
@@ -58,5 +59,8 @@ in your project files.
         # available SwaggerUI versions: https://github.com/swagger-api/swagger-ui/releases
         "SWAGGER_UI_DIST": "https://cdn.jsdelivr.net/npm/swagger-ui-dist@latest", # default
         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
+        
+        # Redoc UI template override
+        "REDOC_TEMPLATE_NAME": "drf_spectacular/redoc.html", # default
         ...
     }
