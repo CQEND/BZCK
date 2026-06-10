@@ -1,0 +1,83 @@
+diff --git a/docs/settings.rst b/docs/settings.rst
+index 863156b..c73fefe 100644
+--- a/docs/settings.rst
++++ b/docs/settings.rst
+@@ -60,3 +60,22 @@ in your project files.
+         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
+         ...
+     }
++
++Example: Redoc template
++-----------------------
++
++You can override the default Redoc HTML template by providing your own template path.
++This is useful for adding a company logo, customizing the title, inserting additional
++JavaScript, or modifying the HTML structure.
++
++.. code:: python
++
++    SPECTACULAR_SETTINGS = {
++        ...
++        # Override the default Redoc template with your own
++        "REDOC_TEMPLATE_NAME": "myapp/custom_redoc.html",
++        ...
++    }
++
++The default template can be found at ``drf_spectacular/templates/drf_spectacular/redoc.html``.
++Copy it to your project's templates directory and modify it as needed.
+diff --git a/drf_spectacular/settings.py b/drf_spectacular/settings.py
+index 6650a77..e04d620 100644
+--- a/drf_spectacular/settings.py
++++ b/drf_spectacular/settings.py
+@@ -76,6 +76,9 @@ SPECTACULAR_DEFAULTS: Dict[str, Any] = {
+     # The settings are serialized with json.dumps(). If you need customized JS, use a
+     # string instead. The string must then contain valid JS and is passed unchanged.
+     'REDOC_UI_SETTINGS': {},
++    # Redoc template name. Override this to use a custom Redoc HTML template
++    # (e.g. to add a company logo, custom title, or extra JS).
++    'REDOC_TEMPLATE_NAME': 'drf_spectacular/redoc.html',
+ 
+     # CDNs for swagger and redoc. You can change the version or even host your
+     # own depending on your requirements. For self-hosting, have a look at
+diff --git a/drf_spectacular/views.py b/drf_spectacular/views.py
+index c81a4b3..99ac49b 100644
+--- a/drf_spectacular/views.py
++++ b/drf_spectacular/views.py
+@@ -238,9 +238,11 @@ class SpectacularRedocView(APIView):
+     authentication_classes = AUTHENTICATION_CLASSES
+     url_name: str = 'schema'
+     url: Optional[str] = None
+-    template_name: str = 'drf_spectacular/redoc.html'
+     title: Optional[str] = spectacular_settings.TITLE
+ 
++    def get_template_names(self):
++        return spectacular_settings.REDOC_TEMPLATE_NAME
++
+     @extend_schema(exclude=True)
+     def get(self, request, *args, **kwargs):
+         return Response(
+@@ -250,7 +252,7 @@ class SpectacularRedocView(APIView):
+                 'schema_url': self._get_schema_url(request),
+                 'settings': self._dump(spectacular_settings.REDOC_UI_SETTINGS),
+             },
+-            template_name=self.template_name
++            template_name=self.get_template_names()
+         )
+ 
+     def _dump(self, data):
+diff --git a/tests/test_view.py b/tests/test_view.py
+index 414e849..3467d26 100644
+--- a/tests/test_view.py
++++ b/tests/test_view.py
+@@ -194,3 +194,11 @@ def test_swagger_oauth_redirect_view(get_params):
+     else:
+         assert response.headers['Location'] ==\
+                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
++
++
++@mock.patch(
++    'drf_spectacular.settings.spectacular_settings.REDOC_TEMPLATE_NAME',
++    'custom_redoc.html'
++)
++def test_redoc_custom_template_name():
++    assert SpectacularRedocView().get_template_names() == 'custom_redoc.html'

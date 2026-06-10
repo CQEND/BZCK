@@ -1,0 +1,230 @@
+diff --git a/_test_choice.py b/_test_choice.py
+new file mode 100644
+index 0000000..710d6d4
+--- /dev/null
++++ b/_test_choice.py
+@@ -0,0 +1,54 @@
++import os, sys
++os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tests.settings')
++
++import django
++django.setup()
++
++from django.db import models
++from rest_framework import serializers, viewsets
++from django_filters.rest_framework import DjangoFilterBackend, FilterSet, ChoiceFilter
++from drf_spectacular.generators import SchemaGenerator
++
++# Define models inline
++class Color(models.Model):
++    name = models.CharField(max_length=10, choices=(('red', 'Red'), ('blue', 'Blue'), ('green', 'Green')))
++
++    class Meta:
++        app_label = 'tests'
++
++class ColorSerializer(serializers.ModelSerializer):
++    class Meta:
++        model = Color
++        fields = '__all__'
++
++
++# Test 1: ChoiceFilter with explicit choices
++class Filter1(FilterSet):
++    color = ChoiceFilter(choices=(('x', 'X'), ('y', 'Y')))
++
++    class Meta:
++        model = Color
++        fields = []
++
++class View1(viewsets.ReadOnlyModelViewSet):
++    queryset = Color.objects.all()
++    serializer_class = ColorSerializer
++    filter_backends = [DjangoFilterBackend]
++    filterset_class = Filter1
++
++gen = SchemaGenerator(patterns=None)
++schema = gen.get_schema(request=None, public=True, patterns=None)
++
++# Find the endpoint
++for path, methods in schema.get('paths', {}).items():
++    for method, info in methods.items():
++        if method == 'get':
++            params = info.get('parameters', [])
++            for p in params:
++                if p['name'] == 'color':
++                    print("Test 1 - ChoiceFilter with explicit choices:")
++                    print(f"  Schema: {p['schema']}")
++                    enum = p['schema'].get('enum')
++                    print(f"  Enum: {enum}")
++                    assert enum == ['x', 'y'], f"Expected ['x', 'y'], got {enum}"
++                    print("  PASS")
+\ No newline at end of file
+diff --git a/drf_spectacular/contrib/django_filters.py b/drf_spectacular/contrib/django_filters.py
+index a125986..a79d3d5 100644
+--- a/drf_spectacular/contrib/django_filters.py
++++ b/drf_spectacular/contrib/django_filters.py
+@@ -130,18 +130,27 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+             else:
+                 schema = build_basic_type(OpenApiTypes.NUMBER)
+         elif isinstance(filter_field, (filters.ChoiceFilter, filters.MultipleChoiceFilter)):
+-            try:
+-                schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
+-            except Exception:
+-                if filter_choices and is_basic_type(type(filter_choices[0])):
+-                    # fallback to type guessing from first choice element
+-                    schema = build_basic_type(type(filter_choices[0]))
+-                else:
+-                    warn(
+-                        f'Unable to guess choice types from values, filter method\'s type hint '
+-                        f'or find "{field_name}" in model. Defaulting to string.'
+-                    )
+-                    schema = build_basic_type(OpenApiTypes.STR)
++            if filter_choices:
++                schema = build_basic_type(self._get_schema_type_from_choices(filter_choices))
++                try:
++                    model_field = self._get_model_field(filter_field, model)
++                    if isinstance(model_field, models.Field) and model_field.help_text:
++                        schema['description'] = model_field.help_text
++                except Exception:
++                    pass
++            else:
++                try:
++                    schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
++                except Exception:
++                    if filter_choices and is_basic_type(type(filter_choices[0])):
++                        # fallback to type guessing from first choice element
++                        schema = build_basic_type(type(filter_choices[0]))
++                    else:
++                        warn(
++                            f'Unable to guess choice types from values, filter method\'s type hint '
++                            f'or find "{field_name}" in model. Defaulting to string.'
++                        )
++                        schema = build_basic_type(OpenApiTypes.STR)
+         else:
+             # the last resort is to look up the type via the model or queryset field
+             # and emit a warning if we were unsuccessful.
+@@ -235,6 +244,17 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+ 
+             return choices
+ 
++    def _get_schema_type_from_choices(self, choices):
++        if not choices:
++            return OpenApiTypes.STR
++        if all(isinstance(c, bool) for c in choices):
++            return OpenApiTypes.BOOL
++        if all(isinstance(c, int) for c in choices):
++            return OpenApiTypes.INT
++        if all(isinstance(c, (int, float)) for c in choices):
++            return OpenApiTypes.NUMBER
++        return OpenApiTypes.STR
++
+     def _get_model_field(self, filter_field, model):
+         if not filter_field.field_name:
+             return None
+diff --git a/tests/contrib/test_django_filters.py b/tests/contrib/test_django_filters.py
+index eee7790..91a1892 100644
+--- a/tests/contrib/test_django_filters.py
++++ b/tests/contrib/test_django_filters.py
+@@ -498,3 +498,102 @@ def test_filterset_enum_includes_null_label(no_warnings):
+ 
+     assert category_typed_multi_type_schema['name'] == 'category_typed_multi'
+     assert category_typed_multi_type_schema['schema']['items']['enum'] == ["a", "b"]
++
++
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_enum_with_explicit_choices(no_warnings):
++    class XModel(models.Model):
++        name = models.CharField(max_length=100)
++
++    class XSerializer(serializers.ModelSerializer):
++        class Meta:
++            model = XModel
++            fields = '__all__'
++
++    class XFilterSet(FilterSet):
++        status = ChoiceFilter(
++            field_name='name',
++            choices=((1, 'One'), (2, 'Two'), (3, 'Three'))
++        )
++
++        class Meta:
++            model = XModel
++            fields = []
++
++    class XViewSet(viewsets.ModelViewSet):
++        queryset = XModel.objects.all()
++        serializer_class = XSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = XFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    params = schema['paths']['/x/']['get']['parameters']
++    assert len(params) == 1
++    assert params[0]['name'] == 'status'
++    assert params[0]['schema']['type'] == 'integer'
++    assert params[0]['schema']['enum'] == [1, 2, 3]
++
++
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_enum_with_callable_choices(no_warnings):
++    class XModel(models.Model):
++        name = models.CharField(max_length=100, choices=(('A', 'aaa'), ('B', 'b')))
++
++    class XSerializer(serializers.ModelSerializer):
++        class Meta:
++            model = XModel
++            fields = '__all__'
++
++    def get_choices():
++        return (('C', 'ccc'), ('D', 'ddd'))
++
++    class XFilterSet(FilterSet):
++        name = ChoiceFilter(field_name='name', choices=get_choices)
++
++        class Meta:
++            model = XModel
++            fields = []
++
++    class XViewSet(viewsets.ModelViewSet):
++        queryset = XModel.objects.all()
++        serializer_class = XSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = XFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    params = schema['paths']['/x/']['get']['parameters']
++    assert len(params) == 1
++    assert params[0]['name'] == 'name'
++    assert 'enum' not in params[0]['schema']
++
++
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_enum_from_model_field(no_warnings):
++    class XModel(models.Model):
++        status = models.CharField(
++            max_length=10,
++            choices=(('active', 'Active'), ('inactive', 'Inactive'))
++        )
++
++    class XSerializer(serializers.ModelSerializer):
++        class Meta:
++            model = XModel
++            fields = '__all__'
++
++    class XFilterSet(FilterSet):
++        class Meta:
++            model = XModel
++            fields = ['status']
++
++    class XViewSet(viewsets.ModelViewSet):
++        queryset = XModel.objects.all()
++        serializer_class = XSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = XFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    params = schema['paths']['/x/']['get']['parameters']
++    assert len(params) == 1
++    assert params[0]['name'] == 'status'
++    assert params[0]['schema']['type'] == 'string'
++    assert params[0]['schema']['enum'] == ['active', 'inactive']

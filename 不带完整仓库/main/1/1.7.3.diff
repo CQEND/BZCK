@@ -1,0 +1,38 @@
+diff --git a/config/checkstyle/checkstyle.xml b/config/checkstyle/checkstyle.xml
+index ca876834d..012a9f0c7 100644
+--- a/config/checkstyle/checkstyle.xml
++++ b/config/checkstyle/checkstyle.xml
+@@ -213,7 +213,11 @@
+         </module>
+         <module name="AvoidNoArgumentSuperConstructorCall"/>
+         <module name="AvoidDoubleBraceInitialization"/>
+-<!-- TODO Enable many more checks (go about this one by one, step by step, raise separate PRs fixing and then enforcing):
++        <module name="JavadocMethod">
++            <property name="accessModifiers" value="public, protected"/>
++            <property name="validateThrows" value="true"/>
++        </module>
++        <!-- TODO Enable many more checks (go about this one by one, step by step, raise separate PRs fixing and then enforcing):
+ 
+         <module name="HiddenField">
+             <property name="ignoreAbstractMethods" value="true" />
+diff --git a/config/checkstyle/suppressions.xml b/config/checkstyle/suppressions.xml
+index c0523c391..59599dafb 100644
+--- a/config/checkstyle/suppressions.xml
++++ b/config/checkstyle/suppressions.xml
+@@ -40,4 +40,16 @@
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="ClassTypeParameterName"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="HideUtilityClassConstructor"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]build[/\\]generated[/\\]" checks=".*"/>
++
++    <!-- Test classes skip all Javadoc checks -->
++    <suppress files="[/\\]src[/\\]test[/\\]java[/\\]" checks="Javadoc.*"/>
++
++    <!-- Third-party generated code: OpenAPI Generator classes in fineract-client -->
++    <suppress files="[/\\]fineract-client[/\\]src[/\\]main[/\\]java[/\\]org[/\\]apache[/\\]fineract[/\\]client[/\\]" checks=".*"/>
++
++    <!-- Swagger model classes: skip JavadocMethod and JavadocVariable checks -->
++    <suppress files="ApiResourceSwagger\.java" checks="JavadocMethod|JavadocVariable"/>
++
++    <!-- COB module: COBBusinessStepServiceImpl.run() method is long but logically cohesive -->
++    <suppress files="COBBusinessStepServiceImpl\.java" checks="JavaNCSS|MethodLength"/>
+ </suppressions>

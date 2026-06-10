@@ -1,0 +1,118 @@
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..dd3a430 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -371,11 +371,111 @@ class AutoSchema(ViewInspector):
+ 
+     def get_request_serializer(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_request_serializer()
+ 
+     def get_response_serializers(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_response_serializers()
++
++    def _get_request_serializer(self) -> Optional[_SerializerType]:
++        """ Returns the request serializer for the current view/method.
++
++        Delegates to :meth:`_get_serializer_by_direction` with ``'request'``
++        direction, which looks up per-method ``request`` overrides from
++        ``@extend_schema_view`` (via ``view.methods``) before falling back to
++        the default serializer discovery.
++        """
++        return self._get_serializer_by_direction(direction='request')
++
++    def _get_response_serializers(self) -> Optional[_SerializerType]:
++        """ Returns the response serializer(s) for the current view/method.
++
++        Delegates to :meth:`_get_serializer_by_direction` with ``'response'``
++        direction, which looks up per-method ``responses`` overrides from
++        ``@extend_schema_view`` (via ``view.methods``) before falling back to
++        the default serializer discovery.
++        """
++        return self._get_serializer_by_direction(direction='response')
++
++    def _get_serializer_by_direction(
++            self,
++            direction: Direction,
++            **kwargs: Any
++    ) -> Optional[_SerializerType]:
++        """ Resolve a serializer for ``direction`` (``'request'`` or ``'response'``).
++
++        The resolution order is:
++
++        1. A per-method override configured via ``@extend_schema_view`` using
++           ``view.methods``, keyed by the view's ``action`` (or the HTTP method
++           name).  The override's ``request`` / ``responses`` attribute is
++           returned based on ``direction``.  When the override is itself a
++           mapping keyed by direction (e.g.
++           ``methods={'list': {'request': ..., 'responses': ...}}``), the
++           matching direction entry is used.
++        2. Otherwise, fall back to the default auto-discovery performed by
++           :meth:`_get_serializer`.
++
++        Extra ``kwargs`` are forwarded to :meth:`_get_serializer` and are
++        accepted so that subclasses can transparently enrich the base
++        resolution without re-implementing the override lookup.
++
++        :param direction: ``'request'`` or ``'response'``.
++        :param kwargs: Additional keyword arguments forwarded to
++            :meth:`_get_serializer`.
++        :returns: A serializer class/instance, a dict-mapped serializer, or
++            ``None`` if no serializer can be discovered.
++        """
++        if direction not in ('request', 'response'):
++            raise ValueError(
++                f'direction must be "request" or "response", got {direction!r}'
++            )
++
++        # Map the attribute names used by the @extend_schema override dicts.
++        override_attr = 'request' if direction == 'request' else 'responses'
++
++        # Determine the action name for the current HTTP method. ViewSets
++        # expose their current action on ``view.action``; for regular views
++        # fall back to the canonical ``method_mapping`` entries (e.g.
++        # 'get' -> 'retrieve').
++        action = getattr(self.view, 'action', None)
++        if not action:
++            action = self.method_mapping.get(self.method.lower(), self.method.lower())
++
++        # Look up a per-method override from ``extend_schema_view`` which
++        # stores per-action extend_schema decorators on ``view.methods``.
++        methods_overrides = getattr(self.view, 'methods', None)
++        if isinstance(methods_overrides, dict):
++            method_decorator = methods_overrides.get(action)
++            if method_decorator is not None:
++                # The override can either be the raw ``@extend_schema``
++                # decorator (exposing ``kwargs``) or a plain dict mapping
++                # direction names to serializers.
++                if hasattr(method_decorator, 'kwargs'):
++                    override_value = method_decorator.kwargs.get(override_attr, empty)
++                elif isinstance(method_decorator, dict):
++                    override_value = method_decorator.get(override_attr, empty)
++                else:
++                    override_value = empty
++
++                if override_value is not empty:
++                    # ``responses`` / ``request`` may be a mapping keyed by
++                    # method name (``GET``/``POST``/...) to allow different
++                    # serializers per HTTP method.
++                    if isinstance(override_value, dict):
++                        method_upper = self.method.upper()
++                        method_lower = self.method.lower()
++                        if method_upper in override_value:
++                            return override_value[method_upper]
++                        if method_lower in override_value:
++                            return override_value[method_lower]
++                        # Method-less dicts (e.g. status_code -> serializer
++                        # or media_type -> serializer) are returned as-is so
++                        # that the caller can perform its own unpacking.
++                        return override_value
++                    return override_value
++
++        return self._get_serializer(**kwargs)
+ 
+     def get_tags(self) -> List[str]:
+         """ override this for custom behaviour """

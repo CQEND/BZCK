@@ -1,0 +1,154 @@
+diff --git a/drf_spectacular/contrib/django_filters.py b/drf_spectacular/contrib/django_filters.py
+index a125986..593c0d4 100644
+--- a/drf_spectacular/contrib/django_filters.py
++++ b/drf_spectacular/contrib/django_filters.py
+@@ -3,7 +3,8 @@ from django.db import models
+ from drf_spectacular.drainage import add_trace_message, get_override, has_override, warn
+ from drf_spectacular.extensions import OpenApiFilterExtension
+ from drf_spectacular.plumbing import (
+-    build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
++    build_array_type, build_basic_type, build_choice_description_list,
++    build_parameter_type,
+     follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
+     is_field,
+ )
+@@ -130,15 +131,20 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+             else:
+                 schema = build_basic_type(OpenApiTypes.NUMBER)
+         elif isinstance(filter_field, (filters.ChoiceFilter, filters.MultipleChoiceFilter)):
+-            try:
+-                schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
+-            except Exception:
+-                if filter_choices and is_basic_type(type(filter_choices[0])):
+-                    # fallback to type guessing from first choice element
+-                    schema = build_basic_type(type(filter_choices[0]))
+-                else:
++            if filter_choices:
++                schema = self._get_schema_from_choices(filter_choices)
++                try:
++                    model_schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
++                    if 'description' in model_schema and 'description' not in schema:
++                        schema['description'] = model_schema['description']
++                except Exception:
++                    pass
++            else:
++                try:
++                    schema = self._get_schema_from_model_field(auto_schema, filter_field, model)
++                except Exception:
+                     warn(
+-                        f'Unable to guess choice types from values, filter method\'s type hint '
++                        f'Unable to guess choice types, filter method\'s type hint '
+                         f'or find "{field_name}" in model. Defaulting to string.'
+                     )
+                     schema = build_basic_type(OpenApiTypes.STR)
+@@ -235,6 +241,22 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+ 
+             return choices
+ 
++    def _get_schema_from_choices(self, choices):
++        non_null_choices = [c for c in choices if c is not None and c != '']
++        if not non_null_choices:
++            schema = build_basic_type(OpenApiTypes.STR)
++        elif all(isinstance(c, bool) for c in non_null_choices):
++            schema = build_basic_type(OpenApiTypes.BOOL)
++        elif all(isinstance(c, int) for c in non_null_choices):
++            schema = build_basic_type(OpenApiTypes.INT)
++        elif all(isinstance(c, (int, float)) for c in non_null_choices):
++            schema = build_basic_type(OpenApiTypes.NUMBER)
++        elif all(isinstance(c, str) for c in non_null_choices):
++            schema = build_basic_type(OpenApiTypes.STR)
++        else:
++            schema = build_basic_type(OpenApiTypes.STR)
++        return schema
++
+     def _get_model_field(self, filter_field, model):
+         if not filter_field.field_name:
+             return None
+diff --git a/tests/contrib/test_django_filters.py b/tests/contrib/test_django_filters.py
+index eee7790..b245d79 100644
+--- a/tests/contrib/test_django_filters.py
++++ b/tests/contrib/test_django_filters.py
+@@ -498,3 +498,83 @@ def test_filterset_enum_includes_null_label(no_warnings):
+ 
+     assert category_typed_multi_type_schema['name'] == 'category_typed_multi'
+     assert category_typed_multi_type_schema['schema']['items']['enum'] == ["a", "b"]
++
++
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_enum_from_explicit_choices(no_warnings):
++    class ChoiceFilterModel(models.Model):
++        name = models.CharField(max_length=100)
++        category = models.CharField(max_length=10, choices=(('A', 'aaa'), ('B', 'bbb')))
++
++    class ChoiceFilterModelSerializer(serializers.ModelSerializer):
++        class Meta:
++            model = ChoiceFilterModel
++            fields = '__all__'
++
++    class ChoiceFilterModelFilterSet(FilterSet):
++        status = ChoiceFilter(choices=(('active', 'Active'), ('inactive', 'Inactive')))
++        priority = ChoiceFilter(choices=((1, 'Low'), (2, 'Medium'), (3, 'High')))
++        multi_status = MultipleChoiceFilter(choices=(('active', 'Active'), ('inactive', 'Inactive')))
++
++        class Meta:
++            model = ChoiceFilterModel
++            fields = []
++
++    class XViewSet(viewsets.ModelViewSet):
++        queryset = ChoiceFilterModel.objects.all()
++        serializer_class = ChoiceFilterModelSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = ChoiceFilterModelFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    params = schema['paths']['/x/']['get']['parameters']
++
++    status_param = next(p for p in params if p['name'] == 'status')
++    assert status_param['schema']['type'] == 'string'
++    assert status_param['schema']['enum'] == ['active', 'inactive']
++
++    priority_param = next(p for p in params if p['name'] == 'priority')
++    assert priority_param['schema']['type'] == 'integer'
++    assert priority_param['schema']['enum'] == [1, 2, 3]
++
++    multi_status_param = next(p for p in params if p['name'] == 'multi_status')
++    assert multi_status_param['schema']['type'] == 'array'
++    assert multi_status_param['schema']['items']['type'] == 'string'
++    assert multi_status_param['schema']['items']['enum'] == ['active', 'inactive']
++
++
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_enum_type_from_choices_not_model(no_warnings):
++    class TypeMismatchModel(models.Model):
++        category = models.CharField(max_length=10, choices=(('A', 'aaa'), ('B', 'bbb')))
++
++    class TypeMismatchSerializer(serializers.ModelSerializer):
++        class Meta:
++            model = TypeMismatchModel
++            fields = '__all__'
++
++    class TypeMismatchFilterSet(FilterSet):
++        cat_int = ChoiceFilter(field_name='category', choices=((1, 'One'), (2, 'Two')))
++        cat_multi_int = MultipleChoiceFilter(field_name='category', choices=((1, 'One'), (2, 'Two')))
++
++        class Meta:
++            model = TypeMismatchModel
++            fields = []
++
++    class XViewSet(viewsets.ModelViewSet):
++        queryset = TypeMismatchModel.objects.all()
++        serializer_class = TypeMismatchSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = TypeMismatchFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    params = schema['paths']['/x/']['get']['parameters']
++
++    cat_int_param = next(p for p in params if p['name'] == 'cat_int')
++    assert cat_int_param['schema']['type'] == 'integer'
++    assert cat_int_param['schema']['enum'] == [1, 2]
++
++    cat_multi_int_param = next(p for p in params if p['name'] == 'cat_multi_int')
++    assert cat_multi_int_param['schema']['type'] == 'array'
++    assert cat_multi_int_param['schema']['items']['type'] == 'integer'
++    assert cat_multi_int_param['schema']['items']['enum'] == [1, 2]

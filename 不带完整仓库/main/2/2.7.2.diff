@@ -1,0 +1,197 @@
+diff --git a/docs/faq.rst b/docs/faq.rst
+index 6b86e8f..93e7a32 100644
+--- a/docs/faq.rst
++++ b/docs/faq.rst
+@@ -480,3 +480,27 @@ To work around this, use ``lazy_serializer`` to lazily load the ``Serializer``.
+         def get_nested_boxes(self, instance: Box):
+             nested_boxes = instance.nested_boxes.all()
+             return BoxSerializer(nested_boxes, many=True).data
++
++How to use asynchronous views (``async def``)
++---------------------------------------------
++
++Django 3.1+ and DRF 3.12+ (or via third-party extensions like ``adrf``) support asynchronous views and the ``AsyncAPIView`` class. *drf-spectacular* provides out-of-the-box support for correctly introspecting these asynchronous views. 
++
++When generating the schema, *drf-spectacular* will safely evaluate any asynchronous implementations of ``get_serializer``, ``get_serializer_class``, or ``get_queryset`` methods using ``asgiref.sync.async_to_sync`` to prevent ``SynchronousOnlyOperation`` errors. Method signatures, type hints, and docstrings of ``async def`` view methods are parsed just like their synchronous counterparts.
++
++.. code-block:: python
++
++    from rest_framework.views import APIView # or adrf.views.APIView
++    from rest_framework.response import Response
++    from drf_spectacular.utils import extend_schema
++
++    class MyAsyncView(APIView):
++        @extend_schema(responses=MySerializer)
++        async def get(self, request):
++            data = await get_some_data()
++            return Response(data)
++
++**Limitations:**
++
++- The schema generation process itself remains synchronous. Asynchronous methods are wrapped and executed synchronously during schema generation.
++- Make sure to use ``@extend_schema`` as usual; it correctly processes the wrapped ``async def`` methods.
+diff --git a/drf_spectacular/contrib/django_filters.py b/drf_spectacular/contrib/django_filters.py
+index a125986..6a55188 100644
+--- a/drf_spectacular/contrib/django_filters.py
++++ b/drf_spectacular/contrib/django_filters.py
+@@ -5,7 +5,7 @@ from drf_spectacular.extensions import OpenApiFilterExtension
+ from drf_spectacular.plumbing import (
+     build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
+     follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
+-    is_field,
++    is_field, force_evaluate_async_result,
+ )
+ from drf_spectacular.settings import spectacular_settings
+ from drf_spectacular.types import OpenApiTypes
+@@ -260,7 +260,7 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+             return build_basic_type(OpenApiTypes.STR)
+ 
+         if not isinstance(model_field, models.Field):
+-            qs = auto_schema.view.get_queryset()
++            qs = force_evaluate_async_result(auto_schema.view.get_queryset())
+             model_field = qs.query.annotations[filter_field.field_name].field
+         return auto_schema._map_model_field(model_field, direction=None)
+ 
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..58f142e 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -40,7 +40,7 @@ from drf_spectacular.plumbing import (
+     is_list_serializer_customized, is_patched_serializer, is_serializer,
+     is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
+     resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
+-    whitelisted,
++    whitelisted, force_evaluate_async_result,
+ )
+ from drf_spectacular.settings import spectacular_settings
+ from drf_spectacular.types import OpenApiTypes
+@@ -1212,15 +1212,15 @@ class AutoSchema(ViewInspector):
+                 # try to circumvent queryset issues with calling get_serializer. if view has NOT
+                 # overridden get_serializer, its safe to use get_serializer_class.
+                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
+-                    return view.get_serializer_class()(context=context)
+-                return view.get_serializer(context=context)
++                    return force_evaluate_async_result(view.get_serializer_class())(context=context)
++                return force_evaluate_async_result(view.get_serializer(context=context))
+             elif isinstance(view, APIView):
+                 # APIView does not implement the required interface, but be lenient and make
+                 # good guesses before giving up and emitting a warning.
+                 if callable(getattr(view, 'get_serializer', None)):
+-                    return view.get_serializer(context=context)
++                    return force_evaluate_async_result(view.get_serializer(context=context))
+                 elif callable(getattr(view, 'get_serializer_class', None)):
+-                    return view.get_serializer_class()(context=context)
++                    return force_evaluate_async_result(view.get_serializer_class())(context=context)
+                 elif hasattr(view, 'serializer_class'):
+                     return view.serializer_class
+                 else:
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..8c67793 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -219,7 +219,7 @@ def get_view_model(view, emit_warnings=True):
+         return model
+ 
+     try:
+-        return view.get_queryset().model
++        return force_evaluate_async_result(view.get_queryset()).model
+     except Exception as exc:
+         if emit_warnings:
+             warn(
+@@ -266,6 +266,15 @@ def get_type_hints(obj) -> Dict[str, Any]:
+     return typing.get_type_hints(obj)
+ 
+ 
++def force_evaluate_async_result(result):
++    if inspect.isawaitable(result):
++        from asgiref.sync import async_to_sync
++        async def evaluate():
++            return await result
++        return async_to_sync(evaluate)()
++    return result
++
++
+ @cache
+ def get_openapi_type_mapping():
+     return {
+diff --git a/test_async.py b/test_async.py
+new file mode 100644
+index 0000000..bd55417
+--- /dev/null
++++ b/test_async.py
+@@ -0,0 +1,23 @@
++import inspect
++import asyncio
++from asgiref.sync import async_to_sync
++
++async def get_serializer():
++    await asyncio.sleep(0.1)
++    return "serializer"
++
++def force_evaluate_if_async(obj):
++    if inspect.iscoroutine(obj):
++        async def evaluate():
++            return await obj
++        return async_to_sync(evaluate)()
++    return obj
++
++coro = get_serializer()
++print(force_evaluate_if_async(coro))
++
++def sync_get_serializer():
++    return "sync_serializer"
++
++sync_val = sync_get_serializer()
++print(force_evaluate_if_async(sync_val))
+diff --git a/tests/test_async_views.py b/tests/test_async_views.py
+new file mode 100644
+index 0000000..5034511
+--- /dev/null
++++ b/tests/test_async_views.py
+@@ -0,0 +1,46 @@
++import pytest
++from rest_framework.views import APIView
++from rest_framework.response import Response
++from rest_framework import serializers
++from drf_spectacular.utils import extend_schema
++from drf_spectacular.generators import SchemaGenerator
++from django.urls import path
++
++class MySerializer(serializers.Serializer):
++    name = serializers.CharField()
++
++class SyncView(APIView):
++    @extend_schema(responses={200: MySerializer})
++    def get(self, request):
++        return Response({"name": "sync"})
++
++try:
++    from adrf.views import APIView as AsyncAPIView
++except ImportError:
++    try:
++        from rest_framework.views import AsyncAPIView
++    except ImportError:
++        # mock it
++        class AsyncAPIView(APIView):
++            pass
++
++class AsyncTestView(AsyncAPIView):
++    @extend_schema(responses={200: MySerializer})
++    async def get(self, request):
++        return Response({"name": "async"})
++
++def test_async_view():
++    sync_generator = SchemaGenerator(patterns=[path('sync', SyncView.as_view())])
++    sync_schema = sync_generator.get_schema(request=None, public=True)
++
++    async_generator = SchemaGenerator(patterns=[path('async', AsyncTestView.as_view())])
++    async_schema = async_generator.get_schema(request=None, public=True)
++
++    sync_op = sync_schema['paths']['/sync']['get']
++    async_op = async_schema['paths']['/async']['get']
++    
++    # remove operationId since they will be 'sync_retrieve' vs 'async_retrieve'
++    del sync_op['operationId']
++    del async_op['operationId']
++
++    assert sync_op == async_op

@@ -1,0 +1,94 @@
+diff --git a/loan_schedule_analysis.md b/loan_schedule_analysis.md
+new file mode 100644
+index 000000000..f239a9e3d
+--- /dev/null
++++ b/loan_schedule_analysis.md
+@@ -0,0 +1,87 @@
++# Fineract 还款计划生成核心流程与分析
++
++## 1. 流程与入口
++
++从 REST API 请求（`POST /api/v1/loans/{loanId}/schedule?command=calculateLoanSchedule` 或 `POST /api/v1/loans?command=calculateLoanSchedule`）到生成还款计划的核心调用链如下：
++
++1. **`LoansApiResource.calculateLoanScheduleOrSubmitLoanApplication`** 
++   - **职责**：REST API 入口。解析并验证传入的 JSON 参数，识别 `command=calculateLoanSchedule`，将请求分发给服务层。
++2. **`LoanScheduleCalculationPlatformServiceImpl.calculateLoanSchedule`**
++   - **职责**：作为还款计划计算的平台层服务实现。调用 API 验证器验证参数格式，随后将解析好的 JSON 交给组装器。
++3. **`LoanScheduleAssembler.assembleLoanScheduleFrom`**
++   - **职责**：核心数据组装器。负责从 JSON 解析出贷款条件（`LoanApplicationTerms`）、费用（`LoanCharge`），并查询数据库获取日历、工作日（`WorkingDays`）及节假日（`Holiday`）配置。最后调用工厂创建生成器并触发计算。
++4. **`LoanScheduleGeneratorFactory` (及其实现 `DefaultLoanScheduleGeneratorFactory`)**
++   - **职责**：根据贷款的摊销方式（如等额本金/本息）和计息方式（如Flat、Declining Balance），决定并实例化具体的 `LoanScheduleGenerator`（例如 `CumulativeDecliningBalanceInterestLoanScheduleGenerator`）。
++5. **`AbstractCumulativeLoanScheduleGenerator.generate`**
++   - **职责**：执行核心的还款计划生成算法。循环逐期计算（通过 `LoanScheduleParams` 管理状态），在每一期中计算本金、利息和费用，并生成 `LoanScheduleModelPeriod` 列表。
++
++---
++
++## 2. 算法实现
++
++### 等额本息（Declining Balance – Equal Installments）
++- **公式说明**：系统将整个贷款视作 PMT 计算（类似 Excel 的 `PMT` 函数），公式为 $EMI = (P \times r \times (1 + r)^N) / ((1 + r)^N - 1)$，其中 $P$ 为本金，$r$ 为期利率，$N$ 为期数。
++- **代码位置**：对于标准贷款，通过 `LoanApplicationTerms.pmtForInstallment` 调用 `FinanicalFunctions.pmt()` 获取 EMI 金额；对于渐进式贷款（Progressive Loan），在 `ProgressiveEMICalculator.calculateEMIValue` 中基于大数精度（BigDecimal）计算：`EMI = rateFactorPlus1N * outstandingBalance / fnResult`。
++- **利息处理**：每期利息 = 上期剩余本金 $\times$ 期利率。剩余的部分作为本期应还本金（`EMI - Interest`）。
++
++### 等额本金（Declining Principal – Equal Principal）
++- **公式说明**：每期应还本金固定，计算公式为：`每期本金 = 贷款总本金 / 总还款期数`。
++- **代码位置**：`LoanApplicationTerms.calculateEqualPrincipalDueForInstallment`。
++- **利息处理**：每期利息 = 上期剩余本金 $\times$ 期利率。每期总还款额 = `每期本金 + 本期利息`，因此每期总还款额呈递减趋势。
++
++### 利息计算基准（Days in Year / Month）
++Fineract 支持多种计息天数基准（如 Actual/360、Actual/365、30/360 等）：
++- **配置类**：由 `DaysInMonthType`（如 `ACTUAL`, `DAYS_30`）和 `DaysInYearType`（如 `ACTUAL`, `DAYS_360`, `DAYS_364`, `DAYS_365`）枚举类进行控制。此外，`DaysInYearCustomStrategyType` 控制闰年 2月 29 日的特殊策略（Full Leap Year 还是 Feb 29 Period Only）。
++- **计算类位置**：在 `LoanApplicationTerms.periodicInterestRate` 方法中，系统会根据上述配置调用 `PaymentPeriodsInOneYearCalculator.calculate` 来计算 `periodsInOneYear`，从而求出准确的期利率（Periodic Interest Rate）。
++
++---
++
++## 3. 日历与节假日影响
++
++如果还款日遇到非工作日（周末或 `calendar/holiday` 配置的休假日），系统会自动进行到期日调整。
++
++- **工作机制**：在生成具体的每一期还款日时，系统会调用 `DefaultScheduledDateGenerator.adjustRepaymentDate`，它会使用递归或循环检查生成的还款日是否落在非工作日或节假日上。
++- **相关类**：
++  - **`HolidayUtil`**：用于判断日期是否在 `Holiday` 范围内，以及根据节假日的 `RescheduleType`（推迟到特定日期或顺延）调整还款日。
++  - **`WorkingDaysUtil`**：判断日期是否为非工作日（`WorkingDays`）。并根据配置的 `RepaymentRescheduleType`（如移到前一个工作日、后一个工作日或移至下个还款日）计算新的到期日。
++- **作用**：
++  - `WorkingDays`：定义了系统默认的一周工作日配置及周末顺延策略。
++  - `Holiday`：定义了特定日期的法定节假日及其特殊的还款调整策略。在计划生成时，通过 `HolidayDetailDTO` 传递至计算上下文中，以保障生成的还款日皆为有效工作日。
++
++---
++
++## 4. 潜在问题与改进建议
++
++### 问题 1：EMI 计算存在精度丢失风险
++- **问题描述**：在标准的等额本息计算中，`FinanicalFunctions.pmt` 方法直接使用了 `double` 类型和 `Math.pow()` 进行计算，而非系统广泛使用的 `BigDecimal` 和 `MathContext`。`double` 的精度限制会导致在处理大额贷款、支持多位小数的加密货币，或超长还款期时，积累几分钱的舍入误差，导致最后一期尾差异常。
++- **代码位置**：`org.apache.fineract.portfolio.loanaccount.loanschedule.domain.FinanicalFunctions#pmt`。
++- **影响场景**：金额巨大、利率极高或极低、还款期数（N）很大时，导致本息计算精度丢失。
++- **改进建议**：重构 `pmt` 函数，彻底移除 `double`。改用 `BigDecimal` 的精确算术运算（如通过泰勒展开式计算 `pow` 或迁移并复用渐进式贷款中已有的 `ProgressiveEMICalculator.calculateEMIValue`）。
++
++### 问题 2：节假日调整存在 O(N^2) 冗余迭代 (性能风险)
++- **问题描述**：在 `DefaultScheduledDateGenerator` 中，当调整后的日期仍是节假日时，会通过 `while` 循环调用 `HolidayUtil.getApplicableHoliday`。而 `getApplicableHoliday` 是对 `List<Holiday>` 进行线性扫描 `O(N)`。在长假（如连休 7 天）或系统中累积了多年节假日配置时，这会导致极其低效的嵌套遍历。
++- **代码位置**：`org.apache.fineract.organisation.holiday.service.HolidayUtil#getApplicableHoliday` 和 `DefaultScheduledDateGenerator#checkAndUpdateWorkingDayIfRepaymentDateIsHolidayDay`。
++- **影响场景**：大量贷款批量生成（如跑批 COB 任务），且遇到假期密集的月份时，会导致 CPU 飙升。
++- **改进建议**：
++  在 `LoanScheduleAssembler` 构建 `HolidayDetailDTO` 时，将 `List<Holiday>` 转换为 `HashSet<LocalDate>` 或区间树（Interval Tree），将单次判定时间复杂度降为 `O(1)`。
++  ```java
++  // 伪代码
++  Set<LocalDate> holidayDates = holidays.stream()
++      .flatMap(h -> dateDate.datesUntil(h.getToDate().plusDays(1)))
++      .collect(Collectors.toSet());
++  // O(1) 判定
++  if (holidayDates.contains(adjustedDate)) { ... }
++  ```
++
++### 问题 3：批处理时的 N+1 查询与缺少缓存 (性能风险)
++- **问题描述**：`LoanScheduleAssembler.assembleLoanScheduleFrom` 每次都会实时查询数据库以获取当前 Office 的节假日和系统全局的工作日配置（调用 `holidayRepository.findByOfficeIdAndGreaterThanDate` 和 `workingDaysRepository.findOne()`）。这两个 Repository 方法并未添加 `@Cacheable` 缓存。
++- **代码位置**：`org.apache.fineract.portfolio.loanaccount.loanschedule.service.LoanScheduleAssembler#assembleLoanScheduleFrom`。
++- **影响场景**：当月底或年底进行大规模重算或结账任务（COB）时，会产生数万次针对同一张 Holiday/WorkingDays 表的重复 SQL 查询，严重拖慢数据库。
++- **改进建议**：
++  为这些基本不变更的静态配置添加应用级缓存（如 Spring Cache）。
++  ```java
++  // 在 HolidayRepository 中
++  @Cacheable(cacheNames = "holidays", key = "#officeId")
++  List<Holiday> findByOfficeIdAndGreaterThanDate(Long officeId, LocalDate date, Integer status);
++  ```
++  或者在批处理任务中将这些配置提升到上下文级别，避免在单个贷款处理流水线中反复查询。
+\ No newline at end of file

@@ -1,0 +1,273 @@
+diff --git a/docs/customization.rst b/docs/customization.rst
+index 38b4ea6..0896129 100644
+--- a/docs/customization.rst
++++ b/docs/customization.rst
+@@ -19,6 +19,12 @@ and ``get_serializer()`` are also used if available. You can also set those
+ on ``APIView``. Even though this is not supported by DRF, *drf-spectacular* will pick
+ them up and use them.
+ 
++Async ``@api_view`` handlers, ``async def`` methods on ``APIView``/``GenericAPIView``
++derivatives, and DRF's ``AsyncAPIView`` are supported during schema generation.
++Coroutine-based ``get_serializer()``, ``get_serializer_class()``, ``get_queryset()``
++and ``get_serializer_context()`` hooks are resolved automatically, but they should still
++avoid depending on runtime-only state or performing heavy side effects.
++
+ 
+ Step 2: :py:class:`@extend_schema <drf_spectacular.utils.extend_schema>`
+ ------------------------------------------------------------------------
+diff --git a/docs/faq.rst b/docs/faq.rst
+index 6b86e8f..2ef5eea 100644
+--- a/docs/faq.rst
++++ b/docs/faq.rst
+@@ -378,6 +378,23 @@ and break down each case separately.
+     def view_func(request, format=None):
+         return ...
+ 
++What async view support is available
++------------------------------------
++
++Schema generation supports async function-based views decorated with ``@api_view``,
++``async def`` entrypoint methods on ``APIView`` and ``GenericAPIView`` descendants,
++and DRF's ``AsyncAPIView`` when that class is available.
++
++The schema generator itself still runs synchronously. Coroutine-based
++``get_serializer()``, ``get_serializer_class()``, ``get_queryset()`` and
++``get_serializer_context()`` hooks are bridged automatically so that request and
++response schemas can be discovered without executing the endpoint itself.
++
++This support is intentionally limited to introspection hooks. If those methods depend on
++runtime-only state, perform expensive I/O, or rely on custom extension code that calls async
++methods directly, you should still provide fallbacks via ``swagger_fake_view`` or explicit
++``@extend_schema`` annotations.
++
+ My ``get_queryset()`` depends on some attributes not available at schema generation time
+ ----------------------------------------------------------------------------------------
+ 
+diff --git a/drf_spectacular/contrib/django_filters.py b/drf_spectacular/contrib/django_filters.py
+index a125986..c483ce5 100644
+--- a/drf_spectacular/contrib/django_filters.py
++++ b/drf_spectacular/contrib/django_filters.py
+@@ -4,8 +4,8 @@ from drf_spectacular.drainage import add_trace_message, get_override, has_overri
+ from drf_spectacular.extensions import OpenApiFilterExtension
+ from drf_spectacular.plumbing import (
+     build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
+-    follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
+-    is_field,
++    call_view_method, follow_field_source, force_instance, get_manager, get_type_hints,
++    get_view_model, is_basic_type, is_field,
+ )
+ from drf_spectacular.settings import spectacular_settings
+ from drf_spectacular.types import OpenApiTypes
+@@ -260,7 +260,7 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+             return build_basic_type(OpenApiTypes.STR)
+ 
+         if not isinstance(model_field, models.Field):
+-            qs = auto_schema.view.get_queryset()
++            qs = call_view_method(auto_schema.view, 'get_queryset')
+             model_field = qs.query.annotations[filter_field.field_name].field
+         return auto_schema._map_model_field(model_field, direction=None)
+ 
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..cadb9b2 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -34,11 +34,12 @@ from drf_spectacular.plumbing import (
+     assert_basic_serializer, build_array_type, build_basic_type, build_choice_field,
+     build_examples_list, build_generic_type, build_listed_example_value, build_media_type_object,
+     build_mocked_view, build_object_type, build_parameter_type, build_serializer_context,
+-    filter_supported_arguments, follow_field_source, follow_model_field_lookup, force_instance,
+-    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_basic_serializer,
+-    is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
+-    is_list_serializer_customized, is_patched_serializer, is_serializer,
+-    is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
++    call_view_method, filter_supported_arguments, follow_field_source, follow_model_field_lookup,
++    force_instance, get_doc, get_list_serializer, get_manager, get_type_hints,
++    get_view_model, is_basic_serializer, is_basic_type, is_coroutine_callable, is_field,
++    is_higher_order_type_hint, is_list_serializer, is_list_serializer_customized,
++    is_patched_serializer, is_serializer, is_trivial_string_variation,
++    modify_media_types_for_versioning, resolve_django_path_parameter,
+     resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
+     whitelisted,
+ )
+@@ -72,6 +73,7 @@ class AutoSchema(ViewInspector):
+         self.path_regex = path_regex
+         self.path_prefix = path_prefix
+         self.method = method.upper()
++        self.view_is_async = self._is_async_view()
+ 
+         if self.is_excluded():
+             return None
+@@ -126,6 +128,10 @@ class AutoSchema(ViewInspector):
+         """ override this for custom behaviour """
+         return False
+ 
++    def _is_async_view(self) -> bool:
++        action_or_method = getattr(self.view, getattr(self.view, 'action', self.method.lower()), None)
++        return callable(action_or_method) and is_coroutine_callable(action_or_method)
++
+     def _is_list_view(self, serializer: Optional[_SerializerType] = None) -> bool:
+         """
+         partially heuristic approach to determine if a view yields an object or a
+@@ -1212,15 +1218,15 @@ class AutoSchema(ViewInspector):
+                 # try to circumvent queryset issues with calling get_serializer. if view has NOT
+                 # overridden get_serializer, its safe to use get_serializer_class.
+                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
+-                    return view.get_serializer_class()(context=context)
+-                return view.get_serializer(context=context)
++                    return call_view_method(view, 'get_serializer_class')(context=context)
++                return call_view_method(view, 'get_serializer', context=context)
+             elif isinstance(view, APIView):
+                 # APIView does not implement the required interface, but be lenient and make
+                 # good guesses before giving up and emitting a warning.
+                 if callable(getattr(view, 'get_serializer', None)):
+-                    return view.get_serializer(context=context)
++                    return call_view_method(view, 'get_serializer', context=context)
+                 elif callable(getattr(view, 'get_serializer_class', None)):
+-                    return view.get_serializer_class()(context=context)
++                    return call_view_method(view, 'get_serializer_class')(context=context)
+                 elif hasattr(view, 'serializer_class'):
+                     return view.serializer_class
+                 else:
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..60b8499 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -24,6 +24,7 @@ else:
+ 
+ import inflection
+ import uritemplate
++from asgiref.sync import async_to_sync
+ from django.apps import apps
+ from django.db.models.constants import LOOKUP_SEP
+ from django.db.models.fields.related_descriptors import (
+@@ -208,6 +209,31 @@ def get_lib_doc_excludes():
+     ]
+ 
+ 
++def is_coroutine_callable(obj) -> bool:
++    while isinstance(obj, functools.partial):
++        obj = obj.func
++    try:
++        obj = inspect.unwrap(obj)
++    except ValueError:
++        pass
++    return inspect.iscoroutinefunction(obj)
++
++
++def call_view_method(view, method_name: str, *args, **kwargs):
++    method = getattr(view, method_name)
++
++    if is_coroutine_callable(method):
++        return async_to_sync(method)(*args, **kwargs)
++
++    result = method(*args, **kwargs)
++    if inspect.isawaitable(result):
++        async def consume():
++            return await result
++
++        return async_to_sync(consume)()
++    return result
++
++
+ def get_view_model(view, emit_warnings=True):
+     """
+     obtain model from view via view's queryset. try safer view attribute first
+@@ -219,7 +245,7 @@ def get_view_model(view, emit_warnings=True):
+         return model
+ 
+     try:
+-        return view.get_queryset().model
++        return call_view_method(view, 'get_queryset').model
+     except Exception as exc:
+         if emit_warnings:
+             warn(
+@@ -1493,7 +1519,7 @@ def filter_supported_arguments(func, **kwargs):
+ 
+ def build_serializer_context(view) -> typing.Dict[str, Any]:
+     try:
+-        return view.get_serializer_context()
++        return call_view_method(view, 'get_serializer_context')
+     except:  # noqa
+         return {'request': view.request}
+ 
+diff --git a/tests/test_regressions.py b/tests/test_regressions.py
+index 6011a22..9900eba 100644
+--- a/tests/test_regressions.py
++++ b/tests/test_regressions.py
+@@ -399,6 +399,76 @@ def test_serializer_class_on_apiview(no_warnings):
+     assert schema['paths']['/x']['post']['requestBody']['content']['application/json']['schema']['$ref'] == comp
+ 
+ 
++def test_async_apiview_serializer_introspection_matches_sync(no_warnings):
++    class XSerializer(serializers.Serializer):
++        field = serializers.UUIDField()
++
++    class SyncView(APIView):
++        authentication_classes = []
++        serializer_class = XSerializer
++
++        def get_serializer(self, *args, **kwargs):
++            return self.serializer_class(*args, **kwargs)
++
++        @extend_schema(summary='sync and async should match')
++        def post(self, request):
++            pass  # pragma: no cover
++
++    AsyncAPIView = getattr(views, 'AsyncAPIView', APIView)
++
++    class AsyncView(AsyncAPIView):
++        authentication_classes = []
++        serializer_class = XSerializer
++
++        async def get_serializer(self, *args, **kwargs):
++            return self.serializer_class(*args, **kwargs)
++
++        @extend_schema(summary='sync and async should match')
++        async def post(self, request):
++            pass  # pragma: no cover
++
++    assert generate_schema('x', view=AsyncView) == generate_schema('x', view=SyncView)
++
++
++def test_async_get_queryset_introspection_matches_sync(no_warnings):
++    class SyncViewset(viewsets.ReadOnlyModelViewSet):
++        serializer_class = SimpleSerializer
++        queryset = SimpleModel.objects.all()
++
++        @extend_schema(summary='sync and async should match')
++        def retrieve(self, request, *args, **kwargs):
++            pass  # pragma: no cover
++
++    class AsyncViewset(viewsets.ReadOnlyModelViewSet):
++        serializer_class = SimpleSerializer
++
++        async def get_queryset(self):
++            return SimpleModel.objects.all()
++
++        @extend_schema(summary='sync and async should match')
++        async def retrieve(self, request, *args, **kwargs):
++            pass  # pragma: no cover
++
++    assert generate_schema('x', viewset=AsyncViewset) == generate_schema('x', viewset=SyncViewset)
++
++
++def test_async_api_view_matches_sync(no_warnings):
++    class XSerializer(serializers.Serializer):
++        field = serializers.UUIDField()
++
++    @extend_schema(request=XSerializer, responses=XSerializer)
++    @api_view(['POST'])
++    def sync_view(request, format=None):
++        pass  # pragma: no cover
++
++    @extend_schema(request=XSerializer, responses=XSerializer)
++    @api_view(['POST'])
++    async def async_view(request, format=None):
++        pass  # pragma: no cover
++
++    assert generate_schema('/x/', view_function=async_view) == generate_schema('/x/', view_function=sync_view)
++
++
+ def test_customized_list_serializer():
+     class X(models.Model):
+         position = models.IntegerField()

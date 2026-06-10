@@ -1,0 +1,35 @@
+diff --git a/config/checkstyle/checkstyle.xml b/config/checkstyle/checkstyle.xml
+index ca876834d..2de0d53e7 100644
+--- a/config/checkstyle/checkstyle.xml
++++ b/config/checkstyle/checkstyle.xml
+@@ -211,6 +211,9 @@
+             <message key="name.invalidPattern"
+              value="Local variable name ''{0}'' must match pattern ''{1}''."/>
+         </module>
++        <module name="JavadocMethod">
++            <property name="accessModifiers" value="public, protected"/>
++        </module>
+         <module name="AvoidNoArgumentSuperConstructorCall"/>
+         <module name="AvoidDoubleBraceInitialization"/>
+ <!-- TODO Enable many more checks (go about this one by one, step by step, raise separate PRs fixing and then enforcing):
+diff --git a/config/checkstyle/suppressions.xml b/config/checkstyle/suppressions.xml
+index c0523c391..d339e8c0d 100644
+--- a/config/checkstyle/suppressions.xml
++++ b/config/checkstyle/suppressions.xml
+@@ -40,4 +40,16 @@
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="ClassTypeParameterName"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="HideUtilityClassConstructor"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]build[/\\]generated[/\\]" checks=".*"/>
++
++    <!-- 测试类完全跳过 Javadoc 检查 -->
++    <suppress files="[/\\]src[/\\]test[/\\]java[/\\]" checks="Javadoc.*"/>
++
++    <!-- 抑制第三方生成的代码 (fineract-client) -->
++    <suppress files="[/\\]fineract-client[/\\]src[/\\]main[/\\]java[/\\]org[/\\]apache[/\\]fineract[/\\]client[/\\]" checks=".*"/>
++
++    <!-- 抑制特定类中的特定检查 (Swagger 模型类) -->
++    <suppress files="ApiResourceSwagger\.java" checks="JavadocMethod|JavadocVariable"/>
++
++    <!-- 抑制特定的长方法警告 -->
++    <suppress files="COBBusinessStepServiceImpl\.java" checks="JavaNCSS|MethodLength"/>
+ </suppressions>

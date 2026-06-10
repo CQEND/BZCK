@@ -1,0 +1,93 @@
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..57ffac7 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -337,15 +337,29 @@ def build_object_type(
+     return schema
+ 
+ 
+-def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
+-    media_type_object = {'schema': schema}
++def _build_media_type_object_schema(schema) -> _SchemaType:
++    return {'schema': schema}
++
++
++def _apply_media_type_examples(media_type_object: _SchemaType, examples=None) -> _SchemaType:
+     if examples:
+         media_type_object['examples'] = examples
++    return media_type_object
++
++
++def _apply_media_type_encoding(media_type_object: _SchemaType, encoding=None) -> _SchemaType:
+     if encoding:
+         media_type_object['encoding'] = encoding
+     return media_type_object
+ 
+ 
++def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
++    media_type_object = _build_media_type_object_schema(schema)
++    media_type_object = _apply_media_type_examples(media_type_object, examples)
++    media_type_object = _apply_media_type_encoding(media_type_object, encoding)
++    return media_type_object
++
++
+ def build_examples_list(examples: Sequence[OpenApiExample]) -> _SchemaType:
+     schema = {}
+     for example in examples:
+diff --git a/tests/test_plumbing.py b/tests/test_plumbing.py
+index 2516969..4ebe385 100644
+--- a/tests/test_plumbing.py
++++ b/tests/test_plumbing.py
+@@ -21,9 +21,10 @@ from rest_framework import generics, serializers
+ 
+ from drf_spectacular.openapi import AutoSchema
+ from drf_spectacular.plumbing import (
+-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
+-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
+-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
++    _apply_media_type_encoding, _apply_media_type_examples, _build_media_type_object_schema,
++    analyze_named_regex_pattern, build_basic_type, build_choice_field, build_media_type_object,
++    detype_pattern, follow_field_source, force_instance, get_doc, get_list_serializer,
++    get_relative_url, is_field, is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+ )
+ from drf_spectacular.validation import validate_schema
+ from tests import generate_schema
+@@ -392,6 +393,38 @@ def test_unknown_basic_type(capsys):
+     assert 'could not resolve type for "<class \'object\'>' in capsys.readouterr().err
+ 
+ 
++def test_build_media_type_object_schema():
++    schema = {'type': 'string'}
++
++    assert _build_media_type_object_schema(schema) == {'schema': schema}
++
++
++@pytest.mark.parametrize('examples, expected', [({}, {'schema': {'type': 'string'}}), ({'sample': {}}, {'schema': {'type': 'string'}, 'examples': {'sample': {}}})])
++def test_apply_media_type_examples(examples, expected):
++    media_type_object = {'schema': {'type': 'string'}}
++
++    assert _apply_media_type_examples(media_type_object, examples) == expected
++
++
++@pytest.mark.parametrize('encoding, expected', [({}, {'schema': {'type': 'string'}}), ({'file': {'contentType': 'image/png'}}, {'schema': {'type': 'string'}, 'encoding': {'file': {'contentType': 'image/png'}}})])
++def test_apply_media_type_encoding(encoding, expected):
++    media_type_object = {'schema': {'type': 'string'}}
++
++    assert _apply_media_type_encoding(media_type_object, encoding) == expected
++
++
++def test_build_media_type_object_composes_helpers():
++    schema = {'type': 'string'}
++    examples = {'sample': {'value': 'x'}}
++    encoding = {'file': {'contentType': 'image/png'}}
++
++    assert build_media_type_object(schema, examples, encoding) == {
++        'schema': schema,
++        'examples': examples,
++        'encoding': encoding,
++    }
++
++
+ def test_choicefield_choices_enum():
+     schema = build_choice_field(serializers.ChoiceField(['bluepill', 'redpill']))
+     assert schema['enum'] == ['bluepill', 'redpill']

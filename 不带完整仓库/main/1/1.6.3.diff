@@ -1,0 +1,241 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java
+new file mode 100644
+index 000000000..677405130
+--- /dev/null
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java
+@@ -0,0 +1,33 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements. See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership. The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied. See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.fineract.portfolio.loanaccount.data;
++
++import java.time.LocalDate;
++import java.util.List;
++import lombok.Data;
++import lombok.NoArgsConstructor;
++
++@Data
++@NoArgsConstructor
++public class BatchUpdateRepaymentDateRequest {
++
++    private List<Long> loanIds;
++    private LocalDate newRepaymentDate;
++    private Long loanProductId;
++}
+\ No newline at end of file
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java
+new file mode 100644
+index 000000000..13c2a4d0f
+--- /dev/null
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java
+@@ -0,0 +1,34 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements. See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership. The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied. See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.fineract.portfolio.loanaccount.data;
++
++import java.util.List;
++import lombok.Getter;
++
++@Getter
++public class BatchUpdateRepaymentDateResponse {
++
++    private final int totalUpdated;
++    private final List<Long> updatedLoanIds;
++
++    public BatchUpdateRepaymentDateResponse(final int totalUpdated, final List<Long> updatedLoanIds) {
++        this.totalUpdated = totalUpdated;
++        this.updatedLoanIds = updatedLoanIds;
++    }
++}
+\ No newline at end of file
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
+index 59cf3054d..c803c8300 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
+@@ -20,6 +20,7 @@ package org.apache.fineract.portfolio.loanaccount.service;
+ 
+ import java.time.LocalDate;
+ import java.util.Collection;
++import java.util.List;
+ import java.util.Map;
+ import org.apache.fineract.infrastructure.core.api.JsonCommand;
+ import org.apache.fineract.infrastructure.core.data.CommandProcessingResult;
+@@ -127,4 +128,6 @@ public interface LoanWritePlatformService {
+     CommandProcessingResult makeRefund(Long loanId, LoanTransactionType loanTransactionType, JsonCommand command);
+ 
+     CommandProcessingResult makeManualInterestRefund(Long loanId, Long transactionId, JsonCommand command);
++
++    void batchUpdateFirstRepaymentDate(List<Long> loanIds, LocalDate newRepaymentDate, Long loanProductId);
+ }
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
+index 86fc0cdbc..ddd6ea57d 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
+@@ -21,6 +21,9 @@ package org.apache.fineract.portfolio.loanaccount.api;
+ import static java.util.Collections.emptyList;
+ import static org.apache.fineract.portfolio.loanproduct.service.LoanEnumerations.interestType;
+ 
++import com.google.gson.Gson;
++import com.google.gson.GsonBuilder;
++import com.google.gson.JsonDeserializer;
+ import com.google.gson.JsonElement;
+ import io.swagger.v3.oas.annotations.Operation;
+ import io.swagger.v3.oas.annotations.Parameter;
+@@ -124,6 +127,8 @@ import org.apache.fineract.portfolio.fund.data.FundData;
+ import org.apache.fineract.portfolio.fund.service.FundReadPlatformService;
+ import org.apache.fineract.portfolio.group.data.GroupGeneralData;
+ import org.apache.fineract.portfolio.group.service.GroupReadPlatformService;
++import org.apache.fineract.portfolio.loanaccount.data.BatchUpdateRepaymentDateRequest;
++import org.apache.fineract.portfolio.loanaccount.data.BatchUpdateRepaymentDateResponse;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+ import org.apache.fineract.portfolio.loanaccount.data.DisbursementData;
+ import org.apache.fineract.portfolio.loanaccount.data.GlimRepaymentTemplate;
+@@ -166,6 +171,7 @@ import org.apache.fineract.portfolio.loanaccount.service.LoanChargeReadPlatformS
+ import org.apache.fineract.portfolio.loanaccount.service.LoanReadPlatformService;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanSummaryDataProvider;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanSummaryProviderDelegate;
++import org.apache.fineract.portfolio.loanaccount.service.LoanWritePlatformService;
+ import org.apache.fineract.portfolio.loanorigination.data.LoanOriginatorData;
+ import org.apache.fineract.portfolio.loanorigination.service.LoanOriginatorReadPlatformService;
+ import org.apache.fineract.portfolio.loanproduct.LoanProductConstants;
+@@ -314,6 +320,7 @@ public class LoansApiResource {
+     private final LoanCapitalizedIncomeBalanceRepository loanCapitalizedIncomeBalanceRepository;
+     private final LoanApprovedAmountHistoryRepository loanApprovedAmountHistoryRepository;
+     private final Optional<LoanOriginatorReadPlatformService> loanOriginatorReadPlatformService;
++    private final LoanWritePlatformService loanWritePlatformService;
+ 
+     /*
+      * This template API is used for loan approval, ideally this should be invoked on loan that are pending for
+@@ -1414,4 +1421,40 @@ public class LoansApiResource {
+         return this.commandsSourceWritePlatformService.logCommandSource(commandRequest);
+     }
+ 
++    @POST
++    @Path("/batch-update-first-repayment-date")
++    @Consumes({ MediaType.APPLICATION_JSON })
++    @Produces({ MediaType.APPLICATION_JSON })
++    @Operation(summary = "Batch update first repayment date for multiple loans", description = "Batch updates the first repayment date for multiple loans that are in APPROVED status, not yet disbursed and have no repayment schedule generated")
++    @RequestBody(required = true, content = @Content(schema = @Schema(implementation = BatchUpdateRepaymentDateRequest.class)))
++    @ApiResponses({
++            @ApiResponse(responseCode = "200", description = "OK", content = @Content(schema = @Schema(implementation = BatchUpdateRepaymentDateResponse.class))),
++            @ApiResponse(responseCode = "400", description = "Bad Request") })
++    public String batchUpdateFirstRepaymentDate(@Parameter(hidden = true) final String apiRequestBodyAsJson) {
++        this.context.authenticatedUser().validateHasEditPermission(RESOURCE_NAME_FOR_PERMISSIONS);
++
++        Gson gson = new GsonBuilder()
++                .registerTypeAdapter(LocalDate.class,
++                        (JsonDeserializer<LocalDate>) (json, typeOfT, context) -> LocalDate.parse(json.getAsString()))
++                .create();
++        BatchUpdateRepaymentDateRequest request = gson.fromJson(apiRequestBodyAsJson, BatchUpdateRepaymentDateRequest.class);
++
++        if (request.getLoanIds() == null || request.getLoanIds().isEmpty()) {
++            throw new IllegalArgumentException("loanIds cannot be null or empty");
++        }
++        if (request.getNewRepaymentDate() == null) {
++            throw new IllegalArgumentException("newRepaymentDate cannot be null");
++        }
++        if (request.getLoanProductId() == null) {
++            throw new IllegalArgumentException("loanProductId cannot be null");
++        }
++
++        this.loanWritePlatformService.batchUpdateFirstRepaymentDate(request.getLoanIds(), request.getNewRepaymentDate(),
++                request.getLoanProductId());
++
++        BatchUpdateRepaymentDateResponse response = new BatchUpdateRepaymentDateResponse(request.getLoanIds().size(),
++                request.getLoanIds());
++        return gson.toJson(response);
++    }
++
+ }
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+index 50dc5a4c0..d4898d83f 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+@@ -3678,4 +3678,56 @@ public class LoanWritePlatformServiceJpaRepositoryImpl implements LoanWritePlatf
+             loan.setExpectedMaturityDate(latestRepaymentDate);
+         }
+     }
++
++    @Override
++    @Transactional
++    public void batchUpdateFirstRepaymentDate(List<Long> loanIds, LocalDate newRepaymentDate, Long loanProductId) {
++        List<Long> updatedLoanIds = new ArrayList<>();
++
++        for (Long loanId : loanIds) {
++            Loan loan = loanRepositoryWrapper.findOneWithNotFoundDetection(loanId);
++
++            if (!loan.getStatus().isApproved()) {
++                throw new GeneralPlatformDomainRuleException(
++                        "error.msg.loan.batch.update.first.repayment.date.status.invalid",
++                        "Loan " + loanId + " is not in APPROVED status. Only approved loans can be updated",
++                        loanId);
++            }
++
++            if (loan.isDisbursed()) {
++                throw new GeneralPlatformDomainRuleException(
++                        "error.msg.loan.batch.update.first.repayment.date.already.disbursed",
++                        "Loan " + loanId + " has already been disbursed. Cannot update repayment date after disbursement",
++                        loanId);
++            }
++
++            if (!loan.getLoanProduct().getId().equals(loanProductId)) {
++                throw new GeneralPlatformDomainRuleException(
++                        "error.msg.loan.batch.update.first.repayment.date.product.mismatch",
++                        "Loan " + loanId + " product ID does not match. Expected: " + loanProductId +
++                                ", Actual: " + loan.getLoanProduct().getId(),
++                        loanId);
++            }
++
++            List<LoanRepaymentScheduleInstallment> installments = loan.getRepaymentScheduleInstallments();
++            if (!installments.isEmpty()) {
++                throw new GeneralPlatformDomainRuleException(
++                        "error.msg.loan.batch.update.first.repayment.date.schedule.exists",
++                        "Loan " + loanId + " already has a repayment schedule generated. Cannot update first repayment date",
++                        loanId);
++            }
++
++            if (DateUtils.isBefore(newRepaymentDate, loan.getExpectedDisbursedOnLocalDate())) {
++                throw new GeneralPlatformDomainRuleException(
++                        "error.msg.loan.batch.update.first.repayment.date.before.disbursement",
++                        "New first repayment date " + newRepaymentDate +
++                                " cannot be before expected disbursement date " + loan.getExpectedDisbursedOnLocalDate(),
++                        loanId);
++            }
++
++            loan.setExpectedFirstRepaymentOnDate(newRepaymentDate);
++            saveAndFlushLoanWithDataIntegrityViolationChecks(loan);
++            updatedLoanIds.add(loanId);
++        }
++    }
+ }

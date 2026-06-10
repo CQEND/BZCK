@@ -1,0 +1,447 @@
+diff --git a/docs/faq.rst b/docs/faq.rst
+index 6b86e8f..743155c 100644
+--- a/docs/faq.rst
++++ b/docs/faq.rst
+@@ -398,6 +398,78 @@ attribute ``swagger_fake_view`` and simply return an empty queryset of the corre
+             # your usual logic
+ 
+ 
++Does *drf-spectacular* support async views (``async def`` / ``AsyncAPIView``)?
++-------------------------------------------------------------------------------
++
++DRF 3.12+ supports async views via ``async def`` methods on ``APIView`` and ``GenericAPIView``.
++*drf-spectacular* supports async views with the following behavior:
++
++- **Async handler methods** (``async def get``, ``async def post``, etc.) are fully supported.
++  The schema generation correctly extracts descriptions, operation IDs, and other metadata
++  from async methods just as it does from sync methods.
++
++- **``serializer_class`` attribute** works as expected with async views. This is the recommended
++  way to specify serializers for async views.
++
++- **:py:func:`@extend_schema <drf_spectacular.utils.extend_schema>`** works seamlessly with
++  async views and async methods.
++
++- **Async ``get_serializer()`` / ``get_serializer_class()`` / ``get_queryset()``** cannot be
++  called during schema generation because *drf-spectacular* operates in a synchronous context
++  and cannot ``await`` coroutines. When these methods are detected as async, a warning is
++  emitted and the library falls back to the ``serializer_class`` attribute or ``@extend_schema``
++  decoration.
++
++**Recommended patterns for async views:**
++
++.. code-block:: python
++
++    # Pattern 1: Use serializer_class (recommended)
++    class MyAsyncView(APIView):
++        serializer_class = MySerializer
++
++        async def get(self, request):
++            ...
++
++    # Pattern 2: Use @extend_schema
++    @extend_schema(responses=MySerializer)
++    class MyAsyncView(APIView):
++        async def get(self, request):
++            ...
++
++    # Pattern 3: Use @extend_schema on individual methods
++    class MyAsyncView(APIView):
++        @extend_schema(responses=MySerializer)
++        async def get(self, request):
++            ...
++
++        @extend_schema(request=MySerializer, responses=MySerializer)
++        async def post(self, request):
++            ...
++
++**Anti-patterns to avoid:**
++
++.. code-block:: python
++
++    # DON'T: async get_serializer_class without serializer_class fallback
++    class BadAsyncView(APIView):
++        async def get_serializer_class(self):  # Cannot be called during schema gen!
++            return MySerializer
++
++    # DO: Provide serializer_class as fallback
++    class GoodAsyncView(APIView):
++        serializer_class = MySerializer  # Fallback for schema generation
++
++        async def get_serializer_class(self):
++            # Your runtime logic here
++            return MySerializer
++
++.. note::
++  Schema generation is inherently a synchronous process. If your async view relies on
++  async-only code paths for serializer discovery, you must provide a synchronous
++  fallback via ``serializer_class`` or ``@extend_schema``.
++
++
+ How to serve in-memory generated files or files in general outside ``FileField``
+ --------------------------------------------------------------------------------
+ 
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..5570e2d 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -35,12 +35,12 @@ from drf_spectacular.plumbing import (
+     build_examples_list, build_generic_type, build_listed_example_value, build_media_type_object,
+     build_mocked_view, build_object_type, build_parameter_type, build_serializer_context,
+     filter_supported_arguments, follow_field_source, follow_model_field_lookup, force_instance,
+-    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_basic_serializer,
+-    is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
++    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_async_callable,
++    is_basic_serializer, is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
+     is_list_serializer_customized, is_patched_serializer, is_serializer,
+-    is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
+-    resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
+-    whitelisted,
++    is_trivial_string_variation, is_view_method_async, modify_media_types_for_versioning,
++    resolve_django_path_parameter, resolve_regex_path_parameter, resolve_type_hint, safe_ref,
++    sanitize_specification_extensions, whitelisted,
+ )
+ from drf_spectacular.settings import spectacular_settings
+ from drf_spectacular.types import OpenApiTypes
+@@ -1209,19 +1209,42 @@ class AutoSchema(ViewInspector):
+         context = build_serializer_context(view)
+         try:
+             if isinstance(view, GenericAPIView):
+-                # try to circumvent queryset issues with calling get_serializer. if view has NOT
+-                # overridden get_serializer, its safe to use get_serializer_class.
+                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
+-                    return view.get_serializer_class()(context=context)
+-                return view.get_serializer(context=context)
++                    get_serializer_class = view.get_serializer_class
++                    if is_async_callable(get_serializer_class):
++                        warn(
++                            'get_serializer_class() is an async function. drf-spectacular cannot '
++                            'call async methods during schema generation. Falling back to '
++                            'serializer_class attribute or @extend_schema.'
++                        )
++                    else:
++                        return get_serializer_class()(context=context)
++                get_serializer = view.get_serializer
++                if is_async_callable(get_serializer):
++                    warn(
++                        'get_serializer() is an async function. drf-spectacular cannot '
++                        'call async methods during schema generation. Falling back to '
++                        'serializer_class attribute or @extend_schema.'
++                    )
++                else:
++                    return get_serializer(context=context)
++                if hasattr(view, 'serializer_class') and view.serializer_class is not None:
++                    return view.serializer_class
++                return None
+             elif isinstance(view, APIView):
+-                # APIView does not implement the required interface, but be lenient and make
+-                # good guesses before giving up and emitting a warning.
+-                if callable(getattr(view, 'get_serializer', None)):
+-                    return view.get_serializer(context=context)
+-                elif callable(getattr(view, 'get_serializer_class', None)):
+-                    return view.get_serializer_class()(context=context)
+-                elif hasattr(view, 'serializer_class'):
++                get_serializer = getattr(view, 'get_serializer', None)
++                get_serializer_class = getattr(view, 'get_serializer_class', None)
++                if callable(get_serializer) and not is_async_callable(get_serializer):
++                    return get_serializer(context=context)
++                elif callable(get_serializer_class) and not is_async_callable(get_serializer_class):
++                    return get_serializer_class()(context=context)
++                elif is_async_callable(get_serializer) or is_async_callable(get_serializer_class):
++                    warn(
++                        'get_serializer()/get_serializer_class() is an async function. '
++                        'drf-spectacular cannot call async methods during schema generation. '
++                        'Falling back to serializer_class attribute or @extend_schema.'
++                    )
++                if hasattr(view, 'serializer_class'):
+                     return view.serializer_class
+                 else:
+                     error(
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..49bee7c 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -190,6 +190,23 @@ def assert_basic_serializer(serializer) -> None:
+     )
+ 
+ 
++def is_async_callable(func) -> bool:
++    if inspect.iscoroutinefunction(func):
++        return True
++    if hasattr(func, '__func__') and inspect.iscoroutinefunction(func.__func__):
++        return True
++    if inspect.isgeneratorfunction(func):
++        return False
++    return False
++
++
++def is_view_method_async(view, method_name: str) -> bool:
++    method = getattr(view, method_name, None)
++    if method is None:
++        return False
++    return is_async_callable(method)
++
++
+ @cache
+ def get_lib_doc_excludes():
+     # do not import on package level due to potential import recursion when loading
+@@ -218,8 +235,18 @@ def get_view_model(view, emit_warnings=True):
+     if model is not None:
+         return model
+ 
++    get_queryset = getattr(view, 'get_queryset', None)
++    if is_async_callable(get_queryset):
++        if emit_warnings:
++            warn(
++                'get_queryset() is an async function. drf-spectacular cannot call async '
++                'methods during schema generation. Please set "queryset = Model.objects.none()" '
++                'on the view or use @extend_schema instead.'
++            )
++        return None
++
+     try:
+-        return view.get_queryset().model
++        return get_queryset().model
+     except Exception as exc:
+         if emit_warnings:
+             warn(
+diff --git a/tests/test_async_views.py b/tests/test_async_views.py
+new file mode 100644
+index 0000000..edadd11
+--- /dev/null
++++ b/tests/test_async_views.py
+@@ -0,0 +1,234 @@
++from django.db import models
++from rest_framework import generics, serializers
++from rest_framework.response import Response
++from rest_framework.views import APIView
++
++from drf_spectacular.plumbing import is_async_callable, is_view_method_async
++from drf_spectacular.utils import extend_schema, extend_schema_view
++from tests import generate_schema, get_response_schema
++
++
++class ItemModel(models.Model):
++    name = models.CharField(max_length=100)
++    description = models.TextField()
++
++    class Meta:
++        app_label = 'tests'
++
++
++class ItemSerializer(serializers.Serializer):
++    id = serializers.IntegerField(read_only=True)
++    name = serializers.CharField()
++    description = serializers.CharField()
++
++
++class SyncAPIView(APIView):
++    serializer_class = ItemSerializer
++
++    def get(self, request):
++        return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    def post(self, request):
++        return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++
++class AsyncAPIView(APIView):
++    serializer_class = ItemSerializer
++
++    async def get(self, request):
++        return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    async def post(self, request):
++        return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++
++def test_async_api_view_schema_matches_sync(no_warnings):
++    sync_schema = generate_schema('/items', view=SyncAPIView)
++    async_schema = generate_schema('/items', view=AsyncAPIView)
++    assert sync_schema == async_schema
++
++
++def test_async_api_view_with_extend_schema(no_warnings):
++    @extend_schema_view(
++        get=extend_schema(responses=ItemSerializer),
++        post=extend_schema(request=ItemSerializer, responses=ItemSerializer),
++    )
++    class AsyncViewWithSchema(APIView):
++        async def get(self, request):
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++        async def post(self, request):
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    schema = generate_schema('/items', view=AsyncViewWithSchema)
++    assert 'Item' in schema['components']['schemas']
++    operation_get = schema['paths']['/items']['get']
++    operation_post = schema['paths']['/items']['post']
++    assert get_response_schema(operation_get) == {'$ref': '#/components/schemas/Item'}
++    assert get_response_schema(operation_post) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_async_api_view_with_extend_schema_on_method(no_warnings):
++    class AsyncViewMethodSchema(APIView):
++        serializer_class = ItemSerializer
++
++        @extend_schema(responses=ItemSerializer)
++        async def get(self, request):
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++        @extend_schema(request=ItemSerializer, responses=ItemSerializer)
++        async def post(self, request):
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    schema = generate_schema('/items', view=AsyncViewMethodSchema)
++    assert 'Item' in schema['components']['schemas']
++    operation_get = schema['paths']['/items']['get']
++    assert get_response_schema(operation_get) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_async_api_view_description(no_warnings):
++    class AsyncViewWithDoc(APIView):
++        serializer_class = ItemSerializer
++
++        async def get(self, request):
++            """Async GET description"""
++            return Response({})
++
++    schema = generate_schema('/items', view=AsyncViewWithDoc)
++    assert schema['paths']['/items']['get']['description'] == 'Async GET description'
++
++
++def test_async_generic_api_view(no_warnings):
++    class AsyncGenericView(generics.GenericAPIView):
++        serializer_class = ItemSerializer
++        queryset = ItemModel.objects.none()
++
++        async def get(self, request):
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    schema = generate_schema('/items', view=AsyncGenericView)
++    assert 'Item' in schema['components']['schemas']
++    operation = schema['paths']['/items']['get']
++    assert get_response_schema(operation) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_async_api_view_with_async_get_serializer_class(warnings):
++    class ViewWithAsyncGetSerializer(APIView):
++        async def get_serializer_class(self):
++            return ItemSerializer
++
++        async def get(self, request):
++            return Response({})
++
++    schema = generate_schema('/items', view=ViewWithAsyncGetSerializer)
++    assert 'schemas' not in schema.get('components', {}) or 'Item' not in schema['components']['schemas']
++
++
++def test_async_api_view_with_async_get_serializer(warnings):
++    class ViewWithAsyncGetSerializer(APIView):
++        serializer_class = ItemSerializer
++
++        async def get_serializer(self, *args, **kwargs):
++            return ItemSerializer(*args, **kwargs)
++
++        async def get(self, request):
++            return Response({})
++
++    schema = generate_schema('/items', view=ViewWithAsyncGetSerializer)
++    assert 'Item' in schema['components']['schemas']
++    operation = schema['paths']['/items']['get']
++    assert get_response_schema(operation) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_async_api_view_with_serializer_class_fallback(warnings):
++    class ViewWithAsyncGetSerializerButClassAttr(APIView):
++        serializer_class = ItemSerializer
++
++        async def get_serializer(self, *args, **kwargs):
++            return ItemSerializer(*args, **kwargs)
++
++        async def get(self, request):
++            return Response({})
++
++    schema = generate_schema('/items', view=ViewWithAsyncGetSerializerButClassAttr)
++    assert 'Item' in schema['components']['schemas']
++    operation = schema['paths']['/items']['get']
++    assert get_response_schema(operation) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_async_api_view_with_extend_schema_overrides_async(no_warnings):
++    @extend_schema(responses=ItemSerializer)
++    class FullyAsyncView(APIView):
++        async def get(self, request):
++            return Response({})
++
++    schema = generate_schema('/items', view=FullyAsyncView)
++    assert 'Item' in schema['components']['schemas']
++    operation = schema['paths']['/items']['get']
++    assert get_response_schema(operation) == {'$ref': '#/components/schemas/Item'}
++
++
++def test_is_async_callable():
++    async def async_func():
++        pass
++
++    def sync_func():
++        pass
++
++    assert is_async_callable(async_func)
++    assert not is_async_callable(sync_func)
++
++
++def test_is_async_callable_with_bound_method():
++    class MyView:
++        async def get(self, request):
++            pass
++
++        def post(self, request):
++            pass
++
++    view = MyView()
++    assert is_async_callable(view.get)
++    assert not is_async_callable(view.post)
++
++
++def test_is_view_method_async():
++    class MyView:
++        async def get(self, request):
++            pass
++
++        def post(self, request):
++            pass
++
++    view = MyView()
++    assert is_view_method_async(view, 'get')
++    assert not is_view_method_async(view, 'post')
++    assert not is_view_method_async(view, 'nonexistent')
++
++
++def test_async_api_view_schema_valid(no_warnings):
++    class AsyncView(APIView):
++        serializer_class = ItemSerializer
++
++        async def get(self, request):
++            """Retrieve items asynchronously"""
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++        async def post(self, request):
++            """Create item asynchronously"""
++            return Response({'id': 1, 'name': 'test', 'description': 'desc'})
++
++    schema = generate_schema('/items', view=AsyncView)
++
++    assert 'Item' in schema['components']['schemas']
++    item_schema = schema['components']['schemas']['Item']
++    assert item_schema['type'] == 'object'
++    assert 'name' in item_schema['properties']
++    assert 'description' in item_schema['properties']
++
++    get_op = schema['paths']['/items']['get']
++    assert get_op['description'] == 'Retrieve items asynchronously'
++    assert get_op['operationId'] == 'items_retrieve'
++
++    post_op = schema['paths']['/items']['post']
++    assert post_op['description'] == 'Create item asynchronously'

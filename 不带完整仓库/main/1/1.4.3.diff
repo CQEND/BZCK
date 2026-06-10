@@ -1,0 +1,577 @@
+diff --git a/fineract-loan-schedule-analysis.md b/fineract-loan-schedule-analysis.md
+new file mode 100644
+index 000000000..e58c12352
+--- /dev/null
++++ b/fineract-loan-schedule-analysis.md
+@@ -0,0 +1,570 @@
++# Fineract 还款计划生成深度分析报告
++
++## 目录
++
++- [1. 流程与入口](#1-流程与入口)
++- [2. 算法实现](#2-算法实现)
++- [3. 日历与节假日影响](#3-日历与节假日影响)
++- [4. 潜在问题与改进建议](#4-潜在问题与改进建议)
++
++---
++
++## 1. 流程与入口
++
++### 1.1 REST API 入口
++
++**端点**: `POST /api/v1/loans/{loanId}/schedule?command=calculateLoanSchedule`
++
++**Controller**: [LoanScheduleApiResource.java](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoanScheduleApiResource.java)
++
++当 `command=calculateLoanSchedule` 时，直接调用 `LoanScheduleCalculationPlatformService.generateLoanScheduleForVariableInstallmentRequest()` 返回计算结果（只读操作，不持久化）；当 `command=addVariations` 或 `deleteVariations` 时，通过 `PortfolioCommandSourceWritePlatformService` 执行写操作。
++
++### 1.2 核心调用链（5 个关键类/方法）
++
++```
++LoanScheduleApiResource.calculateLoanScheduleOrSubmitVariableSchedule()
++  │
++  ├─ [1] LoanScheduleCalculationPlatformService.generateLoanScheduleForVariableInstallmentRequest()
++  │     └─ 接收 loanId + JSON 参数，解析贷款期限变更请求，准备 ScheduleGeneratorDTO
++  │
++  ├─ [2] LoanMapper.regenerateScheduleModel()
++  │     └─ 通过 LoanTermVariationsMapper 构建 LoanApplicationTerms（封装贷款条款、利率、宽限期等）
++  │        然后通过 LoanScheduleGeneratorFactory 选择合适的生成器
++  │
++  ├─ [3] LoanScheduleGeneratorFactory.create()
++  │     └─ 工厂模式，根据 LoanScheduleType（CUMULATIVE/NO_COMPOUNDING）和 InterestMethod（DECLINING_BALANCE/FLAT）
++  │        返回对应的 LoanScheduleGenerator 实现
++  │        - CumulativeDecliningBalanceInterestLoanScheduleGenerator（递减余额法）
++  │        - CumulativeFlatInterestLoanScheduleGenerator（固定利率法）
++  │
++  ├─ [4] AbstractCumulativeLoanScheduleGenerator.generate()  [2861 行核心方法]
++  │     └─ 这是整个还款计划生成的"心脏"：
++  │         ① 调用 ScheduledDateGenerator 生成日期序列
++  │         ② 循环计算每期的本金、利息、费用
++  │         ③ 处理利率变更、提前还款再计算
++  │         ④ 调用 calculatePrincipalInterestComponentsForPeriod()
++  │
++  └─ [5] CumulativeDecliningBalanceInterestLoanScheduleGenerator
++          .calculatePrincipalInterestComponentsForPeriod()
++          └─ 执行具体的递减余额法本息计算：
++             ① 遍历 principalVariation 中的每段区间
++             ② 对每段调用 loanApplicationTerms.calculateTotalInterestForPeriod()
++             ③ 汇总各段利息后调用 calculateTotalPrincipalForPeriod() 计算本金
++```
++
++### 1.3 各关键类职责速览
++
++| 类名 | 职责 |
++|------|------|
++| [LoanScheduleApiResource](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoanScheduleApiResource.java) | REST 端点，接收 HTTP 请求并分派到不同处理路径 |
++| [LoanScheduleCalculationPlatformService](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/service/LoanScheduleCalculationPlatformService.java) | 服务层接口，封装还款计划计算与更新的业务逻辑 |
++| [LoanMapper](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/mapper/LoanMapper.java) | 将 Loan 实体映射为 LoanApplicationTerms，协调生成器工厂生成计划 |
++| [AbstractCumulativeLoanScheduleGenerator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/AbstractCumulativeLoanScheduleGenerator.java) | 累加模式还款计划生成的抽象基类，封装了完整的迭代生成流程（2861 行） |
++| [CumulativeDecliningBalanceInterestLoanScheduleGenerator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/CumulativeDecliningBalanceInterestLoanScheduleGenerator.java) | 递减余额法的具体本息计算组件 |
++| [LoanApplicationTerms](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java) | 封装贷款条款、利率、宽限期等参数，提供 PMT、利息计算等业务方法（2113 行） |
++| [DefaultScheduledDateGenerator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java) | 生成还款日期序列，调整非工作日和节假日 |
++| [LoanScheduleGeneratorFactory](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanScheduleGeneratorFactory.java) | 工厂接口，根据贷款类型和计息方法创建对应的生成器 |
++| [DefaultPaymentPeriodsInOneYearCalculator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java) | 计算一年内的还款期数及还款周期分数 |
++
++---
++
++## 2. 算法实现
++
++### 2.1 等额本息（Declining Balance – Equal Installments）
++
++#### 计算公式
++
++每期还款额（PMT）由以下公式确定：
++
++```
++PMT = P × [r(1+r)^n] / [(1+r)^n - 1]
++
++其中：
++  P  = 剩余本金（Outstanding Balance）
++  r  = 每期利率（Periodic Interest Rate）
++  n  = 剩余期数（Remaining Periods）
++```
++
++每期利息 = 剩余本金 × 每期利率
++每期本金 = PMT - 每期利息
++
++#### 代码实现位置
++
++1. **PMT 数学函数**：[FinanicalFunctions.pmt()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/FinanicalFunctions.java#L32-L55)
++   ```java
++   public static double pmt(final double interestRateFraction, final double numberOfPayments,
++           final double principal, final double futureValue, final boolean type) {
++       // c = (r / (1 - (1 + r)^-N)) * P
++       // 使用 double 计算，存在精度风险
++       if (interestRateFraction == 0) {
++           payment = -1 * (futureValue + principal) / numberOfPayments;
++       } else {
++           final double r1 = interestRateFraction + 1;
++           payment = (futureValue + principal * Math.pow(r1, numberOfPayments)) * interestRateFraction
++                   / ((type ? r1 : 1) * (1 - Math.pow(r1, numberOfPayments)));
++       }
++   }
++   ```
++
++2. **PMT 调用入口**：[LoanApplicationTerms.pmtForInstallment()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1004-L1018)
++   - 使用 `DaysInMonthType.DAYS_30` 和 `DaysInYearType.DAYS_365` 作为默认周期利率计算的基准
++   - 调用 `calculateTotalDueForEqualInstallmentRepaymentPeriod()` 获取 PMT 金额
++
++3. **每期本金计算**：[LoanApplicationTerms.calculatePrincipalDueForInstallment()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1710-L1717)
++   ```java
++   private Money calculatePrincipalDueForInstallment(final int periodNumber,
++           final Money totalDuePerInstallment, final Money periodInterest) {
++       Money principal = totalDuePerInstallment.minus(periodInterest);
++       if (isPrincipalGraceApplicableForThisPeriod(periodNumber)) {
++           principal = principal.zero();
++       }
++       return principal;
++   }
++   ```
++
++### 2.2 等额本金（Declining Principal – Equal Principal）
++
++#### 计算公式
++
++每期偿还本金固定，利息逐期递减：
++
++```
++每期本金 = 贷款本金 / 还款总期数
++每期利息 = 剩余本金 × 每期利率
++每期还款额 = 每期本金 + 每期利息
++```
++
++#### 代码实现位置
++
++[LoanApplicationTerms.calculateEqualPrincipalDueForInstallment()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1670-L1692)
++```java
++private Money calculateEqualPrincipalDueForInstallment(final MathContext mc, final int periodNumber) {
++    Money principal = this.principal;
++    if (this.fixedPrincipalAmount == null) {
++        final Integer numberOfPrincipalPaymentPeriods = calculateNumberOfRemainingPrincipalPaymentPeriods(
++            this.actualNumberOfRepayments, periodNumber);
++        principal = this.principal.dividedBy(numberOfPrincipalPaymentPeriods, mc);
++        this.fixedPrincipalAmount = principal.getAmount();
++    }
++    // ...
++    return principal;
++}
++```
++
++**选择逻辑**：[LoanApplicationTerms.calculateTotalPrincipalForPeriod()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L974-L1002)
++```java
++case DECLINING_BALANCE:
++    switch (this.amortizationMethod) {
++        case EQUAL_INSTALLMENTS:
++            // → 等额本息：PMT - 当期利息
++        case EQUAL_PRINCIPAL:
++            // → 等额本金：固定本金
++    }
++```
++
++### 2.3 利息计算基准（Days In Year / Days In Month）
++
++Fineract 支持多种日计数基准，通过两个枚举类配置：
++
++#### 配置枚举类
++
++| 枚举 | 位置 | 可选值 |
++|------|------|--------|
++| [DaysInYearType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInYearType.java) | `fineract-core/.../DaysInYearType.java` | `ACTUAL(1)`, `DAYS_360(360)`, `DAYS_364(364)`, `DAYS_365(365)` |
++| [DaysInMonthType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInMonthType.java) | `fineract-core/.../DaysInMonthType.java` | `ACTUAL(1)`, `DAYS_30(30)` |
++
++#### 周期利率计算逻辑
++
++周期利率的计算位于 [LoanApplicationTerms.periodicInterestRate()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1399-L1488)：
++
++```java
++private BigDecimal periodicInterestRate(...) {
++    // 1. 计算一年内的期数
++    final long loanTermPeriodsInOneYear = calculatePeriodsInOneYear(calculator);
++    
++    // 2. 日利率 = 年利率 / 一年天数（根据 DaysInYearType）
++    final BigDecimal oneDayOfYearInterestRate = this.annualNominalInterestRate
++            .divide(loanTermPeriodsInYearBigDecimal, mc)
++            .divide(divisor, mc);
++    
++    // 3. 周期利率 = 日利率 × 周期天数
++    //    周期天数根据 DaysInMonthType 计算（ACTUAL=实际天数, 30=固定30天）
++    switch (this.repaymentPeriodFrequencyType) {
++        case MONTHS:
++            if (daysInMonthType.isDaysInMonth_30()) {
++                numberOfDaysInPeriod = BigDecimal.valueOf(30 * this.repaymentEvery);
++            } else {
++                numberOfDaysInPeriod = BigDecimal.valueOf(getExactDaysInPeriod(periodStartDate, periodEndDate));
++            }
++    }
++    
++    return oneDayOfYearInterestRate.multiply(numberOfDaysInPeriod, mc);
++}
++```
++
++#### 一年期数计算
++
++[LoanApplicationTerms.calculatePeriodsInOneYear()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1496-L1521)：
++- 当 `DaysInYearType != ACTUAL` 时，直接使用配置值（360/364/365）
++- 当 `DaysInYearType == ACTUAL` 且非 PMT 计算时，使用当年实际天数（闰年 366）
++
++#### Leap Year 策略
++
++[DaysInYearCustomStrategyType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInYearCustomStrategyType.java) 定义了两种闰年策略：
++- `FULL_LEAP_YEAR`：闰年始终按 366 天计算
++- `FEB_29_PERIOD_ONLY`：仅当计息区间包含 2 月 29 日时才按 366 天
++
++#### 相关计算类
++
++| 类 | 位置 | 职责 |
++|----|------|------|
++| [DefaultPaymentPeriodsInOneYearCalculator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java) | fineract-loan | 计算一年期数及还款周期分数 |
++| [AprCalculator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/AprCalculator.java) | fineract-loan | APR 年化利率计算 |
++
++---
++
++## 3. 日历与节假日影响
++
++### 3.1 概述
++
++还款日若遇到非工作日（周末或节假日），系统通过 **递归调整算法** 将到期日调整到合理的工作日。该逻辑集中在 [DefaultScheduledDateGenerator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java) 中。
++
++### 3.2 核心调整流程
++
++```
++adjustRepaymentDate()  [第 194 行]
++  └─ getAdjustedDateDetailsDTO()  [第 201 行]
++       └─ recursivelyCheckNonWorkingDaysAndHolidaysAndWorkingDaysExemption()
++            [第 211 行]
++            │
++            ├─ 步骤1: checkAndUpdateWorkingDayIfRepaymentDateIsNonWorkingDay()
++            │   ┌─ 如果当天不是工作日(如周六/日)
++            │   ├─ MOVE_TO_NEXT_WORKING_DAY → date.plusDays(1) 递归检查
++            │   ├─ MOVE_TO_PREVIOUS_WORKING_DAY → date.minusDays(1) 递归检查
++            │   ├─ MOVE_TO_NEXT_REPAYMENT_MEETING_DAY → 跳到下一个会议日
++            │   └─ SAME_DAY → 保持不变
++            │
++            ├─ 步骤2: checkAndUpdateWorkingDayIfRepaymentDateIsHolidayDay()
++            │   ┌─ 如果当天是配置的节假日
++            │   ├─ RESCHEDULETOSPECIFICDATE → 跳到指定日期
++            │   └─ RESCHEDULETONEXTREPAYMENTDATE → 跳到下一个还款日
++            │
++            └─ 步骤3: 递归检查（第 236 行）
++                ┌─ 如果调整后的日期仍是节假日或非工作日，
++                │  则递归调用本方法，直到找到合法工作日
++                └─ 防止无限递归（有终止条件）
++```
++
++### 3.3 涉及的关键类
++
++#### [HolidayDetailDTO](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/HolidayDetailDTO.java)
++数据传输对象，封装节假日相关配置：
++- `isHolidayEnabled` — 是否启用节假日调整
++- `holidays` — 节假日列表
++- `workingDays` — 工作日配置
++- `allowTransactionsOnHoliday` — 是否允许节假日交易
++- `allowTransactionsOnNonWorkingDay` — 是否允许非工作日交易
++
++#### [WorkingDays](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/domain/WorkingDays.java)
++工作日配置实体（对应 `m_working_days` 表）：
++- `recurrence` — 工作日的重复规则（如 `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR` 表示周一到周五）
++- `repaymentReschedulingType` — 非工作日调整策略类型
++- `extendTermForDailyRepayments` — 是否延长期限
++- `extendTermForRepaymentsOnHolidays` — 节假日是否延长期限
++
++#### [Holiday](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/domain/Holiday.java)
++节假日实体（对应 `m_holiday` 表）：
++- `fromDate` / `toDate` — 节假日区间
++- `repaymentsRescheduledTo` — 还款调整目标日期
++- `reschedulingType` — 调整类型（RESCHEDULETOSPECIFICDATE / RESCHEDULETONEXTREPAYMENTDATE）
++- `offices` — 适用的机构（ManyToMany）
++
++#### [RescheduleType](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/domain/RescheduleType.java)
++节假日调整类型枚举：
++- `RESCHEDULETOSPECIFICDATE` — 调整到指定日期
++- `RESCHEDULETONEXTREPAYMENTDATE` — 调整到下一个还款日
++
++#### [RepaymentRescheduleType](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/domain/RepaymentRescheduleType.java)
++非工作日调整类型枚举：
++- `SAME_DAY` — 保持同日
++- `MOVE_TO_NEXT_WORKING_DAY` — 移到下一个工作日
++- `MOVE_TO_NEXT_REPAYMENT_MEETING_DAY` — 移到下一个会议日
++- `MOVE_TO_PREVIOUS_WORKING_DAY` — 移到前一个工作日
++
++### 3.4 WorkingDaysService 与 HolidayService 的作用
++
++这两个服务主要负责从数据库读取配置数据，为还款计划生成提供数据基础：
++
++| 服务 | 核心方法 | 作用 |
++|------|---------|------|
++| **WorkingDaysService** | `retrieveWorkingDaysByOfficeId()` | 获取指定机构的工作日配置，决定哪些天可以还款 |
++| **HolidayService** | `retrieveHolidaysForOffice()` | 获取指定机构的节假日列表，用于还款日调整 |
++
++它们通常在贷款审批、放款、还款计划生成时被调用，将数据封装到 `HolidayDetailDTO` 中传递给生成器。实际的调整逻辑由工具类 [WorkingDaysUtil](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java) 和 [HolidayUtil](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java) 执行。
++
++**重要**：WorkingDaysService 和 HolidayService 本身是独立的微服务/模块，其内部通过 JPA Repository 查询数据库，返回的领域对象直接用于 `HolidayDetailDTO` 的构建。
++
++---
++
++## 4. 潜在问题与改进建议
++
++### 问题 1：PMT 计算使用 `double` 导致精度丢失
++
++#### 问题描述
++[FinanicalFunctions.pmt()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/FinanicalFunctions.java#L32-L55) 方法使用 `double` 进行 PMT 计算，而金融计算对精度要求极高。`double` 的 52 位尾数在利率极低（如 0.01%）或极高（如 100%）、期数极大（如 360 期）时，会出现显著的舍入误差。
++
++此外，[paymentPerPeriod()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1604-L1623) 方法中调用 `balance.getAmount().doubleValue()` 也存在同样的精度丢失风险：
++```java
++final double principalDouble = balance.getAmount().multiply(BigDecimal.valueOf(-1)).doubleValue();
++double installmentAmount = FinanicalFunctions.pmt(...);
++```
++
++#### 影响场景
++- **利率极低/极高时**：`double` 精度误差被放大，导致每期还款额偏离理论值
++- **长期贷款（30 年/360 期）**：`Math.pow()` 的累积误差随期数增加
++- **多币种场景**：日元等零小数位货币对精度更敏感
++- **大额贷款**：小额比例误差导致绝对金额偏差显著
++
++#### 改进建议
++使用 `BigDecimal` 重新实现 PMT 公式，或使用 Newton-Raphson 迭代法求解：
++
++```java
++// 改进方案：使用 BigDecimal 实现 PMT
++public static BigDecimal pmt(final BigDecimal interestRateFraction, 
++        final int numberOfPayments, final BigDecimal principal, 
++        final MathContext mc) {
++    if (interestRateFraction.compareTo(BigDecimal.ZERO) == 0) {
++        return principal.divide(BigDecimal.valueOf(numberOfPayments), mc)
++                .negate(mc);
++    }
++    // c = (r * P) / (1 - (1+r)^(-n))
++    final BigDecimal onePlusR = BigDecimal.ONE.add(interestRateFraction, mc);
++    final BigDecimal onePlusRPowerN = onePlusR.pow(numberOfPayments, mc);
++    final BigDecimal denominator = BigDecimal.ONE.subtract(
++            BigDecimal.ONE.divide(onePlusRPowerN, mc), mc);
++    return interestRateFraction.multiply(principal, mc)
++            .divide(denominator, mc);
++}
++```
++
++---
++
++### 问题 2：`AbstractCumulativeLoanScheduleGenerator.generate()` 方法过于庞大，状态管理复杂
++
++#### 问题描述
++[AbstractCumulativeLoanScheduleGenerator.generate()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/AbstractCumulativeLoanScheduleGenerator.java) 方法及其重载版本约 **2861 行**，内部通过 `LoanScheduleParams` 对象维护大量可变状态（30+ 个字段），包括 `outstandingBalance`、`totalCumulativePrincipal`、`latePaymentMap`、`principalPortionMap` 等。
++
++主要风险：
++1. **可变状态的隐式依赖**：方法内不同代码段对 `scheduleParams` 的修改顺序敏感，一处修改可能影响后续所有计算
++2. **重复计算**：`periodicInterestRate()` 在每期被多次调用（PMT 计算 + 利息计算），未缓存结果
++3. **分支爆炸**：方法内含大量嵌套的 `if-else` 和 `switch` 分支（处理利率变更、提前还款、宽限期等），测试覆盖率难以保障
++
++#### 影响场景
++- **大量贷款批量生成**：多次重复计算导致性能下降
++- **功能扩展**：新增还款类型需要修改核心方法，引入回归风险
++- **并发场景**：`LoanScheduleParams` 非线程安全，虽然当前为单线程使用，但重构时容易出错
++
++#### 改进建议
++1. **拆分职责**：将生成流程拆分为多个独立步骤
++2. **引入策略模式**：不同类型的分期计算使用独立的策略类
++3. **缓存周期利率**：对 `periodicInterestRate` 的结果做缓存
++
++```java
++// 改进方案设计
++public class LoanScheduleGenerationPipeline {
++    
++    // 阶段 1: 生成日期序列
++    List<SchedulePeriod> generateDates(LoanApplicationTerms terms, HolidayDetailDTO holidays);
++    
++    // 阶段 2: 计算利息
++    List<PeriodInterest> calculateInterest(List<SchedulePeriod> periods, 
++            LoanApplicationTerms terms, InterestCalculator calculator);
++    
++    // 阶段 3: 计算本金
++    List<PeriodPrincipal> calculatePrincipal(List<PeriodInterest> interests, 
++            LoanApplicationTerms terms, PrincipalCalculator calculator);
++    
++    // 阶段 4: 合并费用
++    List<LoanSchedulePeriod> mergeCharges(List<PeriodPrincipal> principals, 
++            Set<LoanCharge> charges);
++    
++    // 阶段 5: 最终调整（尾期修正、舍入处理）
++    LoanScheduleModel finalize(List<LoanSchedulePeriod> periods);
++}
++```
++
++---
++
++### 问题 3：节假日检查的线性扫描性能问题（潜在 N+1）
++
++#### 问题描述
++[HolidayUtil.getApplicableHoliday()](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java#L45-L53) 每次检查都线性遍历整个节假日列表：
++```java
++public static Holiday getApplicableHoliday(final LocalDate repaymentDate, 
++        final List<Holiday> holidays) {
++    for (final Holiday holiday : holidays) {  // O(n) 扫描
++        if (isHoliday(repaymentDate, holiday)) {
++            return holiday;
++        }
++    }
++    return null;
++}
++```
++
++该函数在 `DefaultScheduledDateGenerator.recursivelyCheckNonWorkingDaysAndHolidays...()` 中被 **递归调用**。每次日期调整后都会重新扫描整个列表。如果节假日列表较大（如配置了全年所有节假日），且递归调整多次，复杂度为 **O(递归深度 × 节假日数量)**。
++
++此外，[DefaultScheduledDateGenerator.checkAndUpdateWorkingDayIfRepaymentDateIsHolidayDay()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L251-L280) 中的 `while` 循环每次迭代都调用 `getApplicableHoliday()`，最坏情况下需要多次扫描。
++
++#### 影响场景
++- **大量节假日配置**（如银行配置全年所有国家法定假日 + 地方假日）
++- **批量贷款生成**：每个贷款每期都执行 O(n) 扫描
++- **频繁调整日期**：递归调整次数多时，复杂度累积
++
++#### 改进建议
++1. **使用 TreeMap 索引**：将 `List<Holiday>` 按 `fromDate` 构建为 `TreeMap<LocalDate, Holiday>`，利用 `floorEntry()` 实现 O(log n) 查找
++2. **添加日期范围缓存**：对已检查的日期范围做缓存，避免重复扫描
++
++```java
++// 改进方案：使用 TreeMap 索引
++public class HolidayCache {
++    private final TreeMap<LocalDate, Holiday> holidayIndex;
++    
++    public HolidayCache(List<Holiday> holidays) {
++        this.holidayIndex = new TreeMap<>();
++        for (Holiday h : holidays) {
++            holidayIndex.put(h.getFromDate(), h);
++        }
++    }
++    
++    public Holiday getApplicableHoliday(LocalDate date) {
++        // 查找小于等于 date 的最大 fromDate 对应的节假日
++        Map.Entry<LocalDate, Holiday> entry = holidayIndex.floorEntry(date);
++        if (entry != null) {
++            Holiday h = entry.getValue();
++            if (!DateUtils.isBefore(date, h.getFromDate()) 
++                    && !DateUtils.isAfter(date, h.getToDate())) {
++                return h;
++            }
++        }
++        return null;
++    }
++}
++```
++
++---
++
++### 问题 4：`MONTHS` 类型使用魔法数字 `30` 作为月天数
++
++#### 问题描述
++在 [DefaultPaymentPeriodsInOneYearCalculator.calculateRepaymentPeriodFraction()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java#L83-L99) 中，当还款频率为 `MONTHS` 时，直接以 `30` 作为每月天数：
++```java
++case MONTHS -> noDaysInterestCalculationGrace.divide(BigDecimal.valueOf(30), mc)
++        .multiply(repayEveryBD, mc);
++```
++
++同样在 [LoanApplicationTerms.periodicInterestRate()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1399-L1488) 中，当 `daysInMonthType.isDaysInMonth_30()` 时使用 `30 * repaymentEvery` 计算天数，否则使用 `DaysInMonthType.ACTUAL` 的实际天数。但 `calculateRepaymentPeriodFraction()` **始终使用 30**，未考虑 `DaysInMonthType.ACTUAL` 配置。
++
++这导致利息宽限期的比例计算与主利息计算的基准不一致，可能引入微小偏差。
++
++#### 影响场景
++- **配置了 `DaysInMonthType.ACTUAL` 的贷款**：宽限期利息比例与实际天数不匹配
++- **涉及宽限期的贷款**：宽限期内的利息计费可能偏差
++- **二月（28/29 天）和 31 天的月份**：宽限期比例偏差明显
++
++#### 改进建议
++将 `DaysInMonthType` 作为参数传入 `calculateRepaymentPeriodFraction()`，根据配置使用实际天数：
++
++```java
++private BigDecimal calculateRepaymentPeriodFraction(
++        final PeriodFrequencyType repaymentPeriodFrequencyType, 
++        final int repaidEvery,
++        final int numberOfDaysInterestCalculationGrace, 
++        final DaysInMonthType daysInMonthType,
++        final LocalDate periodStartDate,
++        final MathContext mc) {
++    
++    BigDecimal repayEveryBD = BigDecimal.valueOf(repaidEvery);
++    BigDecimal noDaysInterestCalculationGrace = BigDecimal.valueOf(numberOfDaysInterestCalculationGrace);
++    
++    return switch (repaymentPeriodFrequencyType) {
++        case MONTHS -> {
++            BigDecimal daysInMonth = daysInMonthType.isDaysInMonth_30() 
++                ? BigDecimal.valueOf(30) 
++                : BigDecimal.valueOf(periodStartDate.lengthOfMonth());
++            yield noDaysInterestCalculationGrace.divide(daysInMonth, mc)
++                    .multiply(repayEveryBD, mc);
++        }
++        // ... 其他情况不变
++    };
++}
++```
++
++---
++
++### 问题 5：递归调整算法的潜在栈溢出风险
++
++#### 问题描述
++[DefaultScheduledDateGenerator.recursivelyCheckNonWorkingDaysAndHolidays...()](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L211-L249) 使用递归方式进行日期调整：
++```java
++if ((holidayDetailDTO.isHolidayEnabled() && isHoliday(...))
++        || WorkingDaysUtil.isNonWorkingDay(...)) {
++    // 递归调用自身
++    recursivelyCheckNonWorkingDaysAndHolidaysAndWorkingDaysExemptionToGenerateNextRepaymentPeriodDate(
++            adjustedDateDetailsDTO, loanApplicationTerms, holidayDetailDTO, isFirstRepayment);
++}
++```
++
++虽然递归有终止条件（找到工作日），但如果以下情况组合，可能导致**递归深度过大**：
++1. **连续多天节假日**（如春节 7 天长假）
++2. **非工作日调整策略冲突**（如调整后仍然是节假日或非工作日）
++3. **错误的配置**（如所有天都配为非工作日）
++4. **极端业务场景**（如 30 天连续假期）
++
++#### 影响场景
++- **配置了长假的机构**（春节、国庆等连续假期）
++- **配置错误**：工作日的 recurrence 规则意外将全部 7 天设为非工作日
++- **测试环境**：单元测试中未覆盖递归边界条件
++
++#### 改进建议
++将递归改为 **迭代循环**，并设置最大迭代次数兜底：
++
++```java
++private AdjustedDateDetailsDTO adjustToWorkingDay(
++        final AdjustedDateDetailsDTO dto,
++        final LoanApplicationTerms terms,
++        final HolidayDetailDTO holidayDetailDTO,
++        final boolean isFirstRepayment) {
++    
++    final int MAX_ITERATIONS = 365;  // 安全上限
++    int iteration = 0;
++    AdjustedDateDetailsDTO current = dto;
++    
++    while (iteration < MAX_ITERATIONS) {
++        // 检查非工作日
++        if (!isSevenDaysWeek) {
++            checkAndUpdateWorkingDayIfRepaymentDateIsNonWorkingDay(current, ...);
++        }
++        // 检查节假日
++        checkAndUpdateWorkingDayIfRepaymentDateIsHolidayDay(current, ...);
++        // 检查调整结果
++        if (isValidWorkingDay(current, holidayDetailDTO)) {
++            return current;
++        }
++        iteration++;
++    }
++    throw new ScheduleDateException(
++            "Unable to find valid working day after " + MAX_ITERATIONS + " iterations");
++}
++```
++
++---
++
++## 总结
++
++| 维度 | 当前实现特点 | 主要风险 | 改进方向 |
++|------|-------------|---------|---------|
++| **精度** | `double` PMT 计算，`BigDecimal` 算术 | 高精度场景丢失 | 改用纯 `BigDecimal` PMT 实现 |
++| **架构** | 巨类模式，2861 行核心方法 | 可维护性差，扩展困难 | 拆分为 Pipeline 阶段 |
++| **性能** | 节假日线性扫描 O(n)，递归调整 | 批量处理性能瓶颈 | TreeMap 索引 + 迭代替代递归 |
++| **一致性** | 宽限期比例硬编码 30 天 | 与实际月份天数不匹配 | 参数化 DaysInMonthType |
++| **安全性** | 无递归深度限制 | 栈溢出风险 | 迭代 + 最大次数兜底 |
+\ No newline at end of file

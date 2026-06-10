@@ -1,0 +1,210 @@
+diff --git a/delinquency-fix.diff b/delinquency-fix.diff
+new file mode 100644
+index 000000000..9f1f1ad73
+--- /dev/null
++++ b/delinquency-fix.diff
+@@ -0,0 +1,101 @@
++diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++index 6a7943d..477d2a8 100644
++--- a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++@@ -59,4 +59,19 @@ public final class HolidayUtil {
++             adjustedDateDetailsDTO.setChangedScheduleDate(holiday.getRepaymentsRescheduledTo());
++         }
++     }
+++
+++    public static long countHolidaysBetween(final LocalDate startDate, final LocalDate endDate, final List<Holiday> holidays) {
+++        if (startDate.isAfter(endDate) || holidays == null || holidays.isEmpty()) {
+++            return 0;
+++        }
+++        long holidayCount = 0;
+++        LocalDate currentDate = startDate;
+++        while (!currentDate.isAfter(endDate)) {
+++            if (isHoliday(currentDate, holidays)) {
+++                holidayCount++;
+++            }
+++            currentDate = currentDate.plusDays(1);
+++        }
+++        return holidayCount;
+++    }
++ }
++diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
++index c8c9373..d1e025b 100644
++--- a/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
+++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
++@@ -19,6 +19,9 @@ package org.apache.fineract.organisation.workingdays.service;
++ 
++ import java.time.LocalDate;
++ import java.util.List;
+++import org.apache.fineract.organisation.holiday.domain.Holiday;
+++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
++ import org.apache.fineract.organisation.workingdays.data.AdjustedDateDetailsDTO;
++ import org.apache.fineract.organisation.workingdays.domain.RepaymentRescheduleType;
++ import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
++@@ -75,4 +78,27 @@ public final class WorkingDaysUtil {
++     public static RepaymentRescheduleType getRepaymentRescheduleType(final WorkingDays workingDays) {
++         return RepaymentRescheduleType.fromInt(workingDays.getRepaymentReschedulingType());
++     }
+++
+++    public static long calculateWorkingDaysBetween(final WorkingDays workingDays, final List<Holiday> holidays,
+++            final LocalDate startDate, final LocalDate endDate) {
+++        if (startDate.isAfter(endDate)) {
+++            return 0;
+++        }
+++        long workingDaysCount = 0;
+++        LocalDate currentDate = startDate;
+++        while (!currentDate.isAfter(endDate)) {
+++            if (isWorkingDay(workingDays, currentDate) && !HolidayUtil.isHoliday(currentDate, holidays)) {
+++                workingDaysCount++;
+++            }
+++            currentDate = currentDate.plusDays(1);
+++        }
+++        return workingDaysCount;
+++    }
+++
+++    public static long calculateBusinessDaysBetween(final LocalDate startDate, final LocalDate endDate) {
+++        if (startDate.isAfter(endDate)) {
+++            return 0;
+++        }
+++        return java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate.plusDays(1));
+++    }
++ }
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++index 00d4d0a..931b227 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++@@ -27,6 +27,10 @@ import java.util.Map;
++ import java.util.Objects;
++ import lombok.RequiredArgsConstructor;
++ import lombok.extern.slf4j.Slf4j;
+++import org.apache.fineract.organisation.holiday.domain.Holiday;
+++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
+++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
+++import org.apache.fineract.organisation.workingdays.service.WorkingDaysUtil;
++ import org.apache.fineract.infrastructure.core.service.DateUtils;
++ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
++ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
++@@ -352,4 +356,20 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
++         }
++     }
+++
+++    private void calculateAndSetDelinquentDaysWithWorkingDays(CollectionData collectionData, long overdueDays, Integer graceDays,
+++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
+++            WorkingDays workingDays, List<Holiday> holidays) {
+++        collectionData.setDelinquentDays(0L);
+++        if (overdueDays > 0 && overdueSinceDate != null) {
+++            long workingDaysCount = WorkingDaysUtil.calculateWorkingDaysBetween(workingDays, holidays, overdueSinceDate, businessDate);
+++            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
+++                    businessDate);
+++            if (pausedDays == null) {
+++                pausedDays = 0L;
+++            }
+++            final long delinquentDays = workingDaysCount - pausedDays - graceDays;
+++            collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
+++        }
+++    }
++ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+index ad912c495..9f41bf8d4 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+@@ -62,4 +62,19 @@ public final class HolidayUtil {
+             adjustedDateDetailsDTO.setChangedScheduleDate(holiday.getRepaymentsRescheduledTo());
+         }
+     }
++
++    public static long countHolidaysBetween(final LocalDate startDate, final LocalDate endDate, final List<Holiday> holidays) {
++        if (startDate.isAfter(endDate) || holidays == null || holidays.isEmpty()) {
++            return 0;
++        }
++        long holidayCount = 0;
++        LocalDate currentDate = startDate;
++        while (!currentDate.isAfter(endDate)) {
++            if (isHoliday(currentDate, holidays)) {
++                holidayCount++;
++            }
++            currentDate = currentDate.plusDays(1);
++        }
++        return holidayCount;
++    }
+ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
+index 989e76d9e..be5ab9747 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java
+@@ -19,6 +19,9 @@
+ package org.apache.fineract.organisation.workingdays.service;
+ 
+ import java.time.LocalDate;
++import java.util.List;
++import org.apache.fineract.organisation.holiday.domain.Holiday;
++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
+ import org.apache.fineract.organisation.workingdays.data.AdjustedDateDetailsDTO;
+ import org.apache.fineract.organisation.workingdays.domain.RepaymentRescheduleType;
+ import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
+@@ -74,4 +77,27 @@ public final class WorkingDaysUtil {
+     public static RepaymentRescheduleType getRepaymentRescheduleType(final WorkingDays workingDays) {
+         return RepaymentRescheduleType.fromInt(workingDays.getRepaymentReschedulingType());
+     }
++
++    public static long calculateWorkingDaysBetween(final WorkingDays workingDays, final List<Holiday> holidays,
++            final LocalDate startDate, final LocalDate endDate) {
++        if (startDate.isAfter(endDate)) {
++            return 0;
++        }
++        long workingDaysCount = 0;
++        LocalDate currentDate = startDate;
++        while (!currentDate.isAfter(endDate)) {
++            if (isWorkingDay(workingDays, currentDate) && !HolidayUtil.isHoliday(currentDate, holidays)) {
++                workingDaysCount++;
++            }
++            currentDate = currentDate.plusDays(1);
++        }
++        return workingDaysCount;
++    }
++
++    public static long calculateBusinessDaysBetween(final LocalDate startDate, final LocalDate endDate) {
++        if (startDate.isAfter(endDate)) {
++            return 0;
++        }
++        return java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate.plusDays(1));
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+index 53d3f244d..3ad111482 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+@@ -27,7 +27,11 @@ import java.util.Objects;
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.apache.fineract.infrastructure.core.service.DateUtils;
++import org.apache.fineract.organisation.holiday.domain.Holiday;
++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
+ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
++import org.apache.fineract.organisation.workingdays.service.WorkingDaysUtil;
+ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
+ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+@@ -360,4 +364,20 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         }
+     }
+ 
++    private void calculateAndSetDelinquentDaysWithWorkingDays(CollectionData collectionData, long overdueDays, Integer graceDays,
++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
++            WorkingDays workingDays, List<Holiday> holidays) {
++        collectionData.setDelinquentDays(0L);
++        if (overdueDays > 0 && overdueSinceDate != null) {
++            long workingDaysCount = WorkingDaysUtil.calculateWorkingDaysBetween(workingDays, holidays, overdueSinceDate, businessDate);
++            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
++                    businessDate);
++            if (pausedDays == null) {
++                pausedDays = 0L;
++            }
++            final long delinquentDays = workingDaysCount - pausedDays - graceDays;
++            collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
++        }
++    }
++
+ }

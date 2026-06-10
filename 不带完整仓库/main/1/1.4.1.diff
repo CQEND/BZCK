@@ -1,0 +1,336 @@
+diff --git a/loan-schedule-analysis.md b/loan-schedule-analysis.md
+new file mode 100644
+index 000000000..6b3ce6511
+--- /dev/null
++++ b/loan-schedule-analysis.md
+@@ -0,0 +1,330 @@
++# Fineract 贷款还款计划生成分析
++
++> 说明：你给出的示例接口为 `POST /api/v1/loans/{loanId}/calculate-loan-schedule`。基于当前仓库代码，实际对应的入口是 `POST /api/v1/loans/{loanId}/schedule?command=calculateLoanSchedule`，资源类位于 [LoanScheduleApiResource](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoanScheduleApiResource.java#L48-L102)。下面的分析基于当前实现展开。
++
++## 1. 流程与入口
++
++### 1.1 REST 到还款计划生成的核心调用链
++
++1. 请求进入 [LoanScheduleApiResource.calculateLoanScheduleOrSubmitVariableSchedule](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoanScheduleApiResource.java#L70-L96)
++   - 负责识别 `command=calculateLoanSchedule`。
++   - 做读权限校验。
++   - 将 `loanId + JSON` 交给计算平台服务。
++
++2. 进入 [LoanScheduleCalculationPlatformServiceImpl.generateLoanScheduleForVariableInstallmentRequest](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/service/LoanScheduleCalculationPlatformServiceImpl.java#L145-L151)
++   - 先用 `fetchLoan()` 读取贷款实体。
++   - 再调用组装器处理“变量分期/期数变动”请求。
++   - 最后把更新后的贷款分期表重新转成 `LoanScheduleData` 返回给 API。
++
++3. 进入 [LoanScheduleAssembler.assempleVariableScheduleFrom](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/service/LoanScheduleAssembler.java#L809-L984)
++   - 校验 variable installment 请求是否合法。
++   - 把新增/删除/改金额/改到期日等 term variations 合并到贷款对象。
++   - 校验最小/最大间隔、meeting date 同步限制。
++   - 触发重新生成还款计划。
++
++4. 进入 [LoanUtilService.buildScheduleGeneratorDTO](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanUtilService.java#L87-L145)
++   - 组装 schedule 生成所需的上下文：币种、节假日、working days、日历、recalculateFrom、浮动利率、罚息等待期等。
++   - 其中 [constructHolidayDTO](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanUtilService.java#L181-L202) 会加载 Holiday + WorkingDays 配置。
++
++5. 进入 [LoanScheduleService.regenerateRepaymentSchedule](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanScheduleService.java#L48-L58)
++   - 统一负责“基于当前贷款状态重建 repayment schedule model”。
++   - 生成后回写 installment，并联动重算 charge。
++
++6. 进入 [LoanMapper.regenerateScheduleModel](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/mapper/LoanMapper.java#L48-L75)
++   - 把 `Loan + ScheduleGeneratorDTO` 转换成 `LoanApplicationTerms`。
++   - 根据 `loanScheduleType` 与 `interestMethod` 选择具体的 schedule generator。
++   - 对 equal amortization 做额外处理。
++
++7. 进入 [LoanTermVariationsMapper.constructLoanApplicationTerms](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/mapper/LoanTermVariationsMapper.java#L65-L106)
++   - 将贷款产品参数、借款参数、term variations、浮动利率等整合为 `LoanApplicationTerms`。
++   - 这是后续全部计算公式的核心输入模型。
++
++8. 进入 [DefaultLoanScheduleGeneratorFactory.create](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultLoanScheduleGeneratorFactory.java#L33-L48)
++   - 决定使用哪一种 schedule generator。
++   - 当前 cumulative schedule 下，`DECLINING_BALANCE` 会落到 `CumulativeDecliningBalanceInterestLoanScheduleGenerator`。
++
++9. 进入 [AbstractCumulativeLoanScheduleGenerator.generate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/AbstractCumulativeLoanScheduleGenerator.java#L82-L444)
++   - 生成每一期的计划日期。
++   - 处理 disbursement、charges、interest recalculation、grace、term variations。
++   - 对每一期调用 `calculatePrincipalInterestComponentsForPeriod()` 计算本金和利息。
++
++10. Declining Balance 场景落到 [CumulativeDecliningBalanceInterestLoanScheduleGenerator.calculatePrincipalInterestComponentsForPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/CumulativeDecliningBalanceInterestLoanScheduleGenerator.java#L83-L194)
++    - 根据余额、利率变更、grace、复利、还款方式，算出当前期 `principal + interest`。
++
++11. 日期调整落到 [DefaultScheduledDateGenerator.adjustRepaymentDate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L195-L307)
++    - 若到期日撞上非工作日或 holiday，会基于 working days / holiday 规则递归调整最终 due date。
++
++### 1.2 至少 5 个关键类/方法与职责
++
++| 关键类/方法 | 职责 |
++| --- | --- |
++| [LoanScheduleApiResource.calculateLoanScheduleOrSubmitVariableSchedule](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoanScheduleApiResource.java#L70-L96) | REST 入口，解析 command，做权限校验，返回序列化结果 |
++| [LoanScheduleCalculationPlatformServiceImpl.generateLoanScheduleForVariableInstallmentRequest](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/service/LoanScheduleCalculationPlatformServiceImpl.java#L145-L151) | 读取贷款、调用 schedule assembler、输出 LoanScheduleData |
++| [LoanScheduleAssembler.assempleVariableScheduleFrom](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/service/LoanScheduleAssembler.java#L809-L984) | 合并 schedule variations、做业务校验、触发 schedule regenerate |
++| [LoanUtilService.buildScheduleGeneratorDTO](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanUtilService.java#L87-L145) | 汇总节假日、working days、calendar、floating rate、recalc 参数 |
++| [LoanScheduleService.regenerateRepaymentSchedule](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanScheduleService.java#L48-L58) | 统一重建 schedule 并回写 installment/charges |
++| [LoanMapper.regenerateScheduleModel](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/mapper/LoanMapper.java#L48-L75) | 将 Loan 转成 LoanApplicationTerms，并挑选 generator |
++| [LoanTermVariationsMapper.constructLoanApplicationTerms](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/mapper/LoanTermVariationsMapper.java#L65-L106) | 组装最终的贷款计算参数模型 |
++| [DefaultLoanScheduleGeneratorFactory.create](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultLoanScheduleGeneratorFactory.java#L33-L48) | 根据 schedule type/interest method 选择具体算法实现 |
++| [AbstractCumulativeLoanScheduleGenerator.generate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/AbstractCumulativeLoanScheduleGenerator.java#L82-L444) | 统筹 schedule 主循环，逐期计算并构造 LoanScheduleModel |
++| [CumulativeDecliningBalanceInterestLoanScheduleGenerator.calculatePrincipalInterestComponentsForPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/CumulativeDecliningBalanceInterestLoanScheduleGenerator.java#L83-L194) | 在 Declining Balance 下计算每期本金/利息 |
++| [DefaultScheduledDateGenerator.adjustRepaymentDate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L195-L307) | 调整周末、非工作日、holiday 影响下的实际到期日 |
++
++## 2. 算法实现
++
++### 2.1 等额本息（Declining Balance – Equal Installments）
++
++#### 数学公式
++
++```text
++设：
++P_t-1 = 第 t 期开始时的剩余本金
++i_t   = 第 t 期利率因子
++N_t   = 剩余还款期数
++EMI_t = 第 t 期固定还款额
++
++利息：Interest_t = P_t-1 × i_t
++等额本息：EMI_t = PMT(i_t, N_t, -P_t-1, 0)
++本金：Principal_t = EMI_t - Interest_t
++期末余额：P_t = P_t-1 - Principal_t
++```
++
++#### Fineract 中的落点
++
++- 利息按余额法计算，入口在 [CumulativeDecliningBalanceInterestLoanScheduleGenerator.calculatePrincipalInterestComponentsForPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/CumulativeDecliningBalanceInterestLoanScheduleGenerator.java#L83-L194)。
++- 每期本金的分支判断在 [LoanApplicationTerms.calculateTotalPrincipalForPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L974-L999)。
++- 等额本息的 PMT 计算在 [LoanApplicationTerms.pmtForInstallment](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1004-L1017) 与 [LoanApplicationTerms.paymentPerPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1604-L1623)。
++- PMT 的底层实现使用 [FinanicalFunctions.pmt](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/FinanicalFunctions.java#L44-L54)。
++- 利息额本身通过 [LoanApplicationTerms.calculateDecliningInterestDueForInstallmentBeforeApplyingGrace](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1625-L1635) 计算，即 `outstandingBalance × periodicInterestRate(...)`。
++
++### 2.2 等额本金（Declining Principal – Equal Principal）
++
++#### 数学公式
++
++```text
++设：
++P0 = 初始本金
++N  = 需要偿还本金的期数（扣除 principal grace 后）
++FixedPrincipal = P0 / N
++
++第 t 期利息：Interest_t = P_t-1 × i_t
++第 t 期本金：Principal_t = FixedPrincipal
++第 t 期应还：Due_t = Principal_t + Interest_t
++期末余额：P_t = P_t-1 - Principal_t
++```
++
++#### Fineract 中的落点
++
++- 等额本金分支同样在 [LoanApplicationTerms.calculateTotalPrincipalForPeriod](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L974-L999)。
++- 固定本金在 [LoanApplicationTerms.calculateEqualPrincipalDueForInstallment](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1674-L1691) 中计算：
++  - 默认是 `principal / remainingPrincipalPaymentPeriods`。
++  - 若配置了 `fixedPrincipalPercentagePerInstallment`，则改为按百分比求固定本金。
++  - 若该期属于 principal grace，则本金置零。
++- 每期总应还额可理解为：
++
++```text
++Due_t = Principal_t + Interest_t + Fee_t + Penalty_t
++```
++
++### 2.3 利息计算基准（Actual/360、Actual/365、30/360 等）
++
++#### 配置类位置
++
++- 天数基准的贷款产品配置存放在 [LoanProductRelatedDetail](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanproduct/domain/LoanProductRelatedDetail.java#L366-L372)。
++  - `fetchDaysInMonthType()`
++  - `fetchDaysInYearType()`
++- 枚举定义位于：
++  - [DaysInMonthType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInMonthType.java#L30-L76)
++  - [DaysInYearType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInYearType.java#L32-L86)
++  - [DaysInYearCustomStrategyType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInYearCustomStrategyType.java#L54-L63)
++- 这些值会被装配进 [LoanApplicationTerms](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L706-L739)。
++
++#### 计算类位置
++
++- cumulative schedule 的日计息核心在 [LoanApplicationTerms.periodicInterestRate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1399-L1460)。
++- 一年内“多少期”的换算在 [LoanApplicationTerms.calculatePeriodsInOneYear](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1491-L1510) 与 [DefaultPaymentPeriodsInOneYearCalculator.calculate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java#L34-L58)。
++- progressive loan 对 `ACTUAL + leap year strategy` 的细分处理更完整，见 [ProgressiveEMICalculator.getNumberOfDays](file:///app/fineract-progressive-loan/src/main/java/org/apache/fineract/portfolio/loanproduct/calc/ProgressiveEMICalculator.java#L1342-L1416) 与 [ProgressiveEMICalculator](file:///app/fineract-progressive-loan/src/main/java/org/apache/fineract/portfolio/loanproduct/calc/ProgressiveEMICalculator.java#L1492-L1538)。
++
++#### 规则解释
++
++1. **Actual/360**
++   - `daysInMonth = ACTUAL`
++   - `daysInYear = 360`
++   - 日利率按 `annualRate / 360`。
++   - 当月/当期用实际天数。
++   - cumulative 实现等价于：
++
++```text
++i_t = (annualRate / 100) × actualDays(period_t) / 360
++```
++
++2. **Actual/365**
++   - `daysInMonth = ACTUAL`
++   - `daysInYear = 365`
++   - 当期天数按实际天数，分母固定 365。
++
++```text
++i_t = (annualRate / 100) × actualDays(period_t) / 365
++```
++
++3. **30/360**
++   - `daysInMonth = DAYS_30`
++   - `daysInYear = 360`
++   - 对月频贷款，期天数被替换为 `30 × repaymentEvery`。
++
++```text
++i_t = (annualRate / 100) × (30 × repaymentEvery) / 360
++```
++
++4. **Actual + leap year strategy**
++   - 配置枚举是 [DaysInYearCustomStrategyType](file:///app/fineract-core/src/main/java/org/apache/fineract/portfolio/common/domain/DaysInYearCustomStrategyType.java#L54-L63)。
++   - `FULL_LEAP_YEAR`：闰年统一按 366。
++   - `FEB_29_PERIOD_ONLY`：只有当计息区间穿过 2 月 29 日才用 366，否则仍用 365。
++   - 这部分在 progressive 计算器中体现得更直接。
++
++## 3. 日历与节假日影响
++
++### 3.1 还款日遇到非工作日/节假日时如何调整
++
++核心入口是 [DefaultScheduledDateGenerator.adjustRepaymentDate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L195-L307)。处理顺序如下：
++
++1. 先生成原始应还日（scheduled due date）。
++2. 读取 `HolidayDetailDTO` 中的 `workingDays + holidays`。
++3. 若当天是非工作日，调用 [checkAndUpdateWorkingDayIfRepaymentDateIsNonWorkingDay](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L290-L307)。
++4. 若当天是 holiday，调用 [checkAndUpdateWorkingDayIfRepaymentDateIsHolidayDay](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L259-L278)。
++5. 如果调整后的日期仍然碰到 holiday 或 non-working day，则在 [recursivelyCheckNonWorkingDaysAndHolidaysAndWorkingDaysExemptionToGenerateNextRepaymentPeriodDate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L221-L246) 中继续递归直到得到最终可用日期。
++
++### 3.2 涉及的主要类
++
++- [LoanUtilService.constructHolidayDTO](file:///app/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanUtilService.java#L181-L202)
++  - 负责把 Holiday、WorkingDays、交易日配置装进 `HolidayDetailDTO`。
++- [DefaultScheduledDateGenerator](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L195-L307)
++  - 在 schedule 生成时真正执行日期修正。
++- [WorkingDaysUtil](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java#L33-L75)
++  - 判断是否为工作日，并按 `SAME_DAY / NEXT_WORKING_DAY / NEXT_REPAYMENT_MEETING_DAY / PREVIOUS_WORKING_DAY` 规则平移日期。
++- [HolidayUtil](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java#L46-L63)
++  - 判断某日是否命中 holiday，并按 holiday 的 reschedule type 做“跳到特定日期”或“跳到下一还款日”。
++
++### 3.3 WorkingDaysService 与 HolidayService 的作用
++
++从“组织配置管理层”看：
++
++- [WorkingDaysReadPlatformServiceImpl.retrieve](file:///app/fineract-provider/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysReadPlatformServiceImpl.java#L75-L96)
++  - 读取全局 working days 规则。
++  - 提供 repayment reschedule type 选项。
++- [HolidayReadPlatformServiceImpl.retrieveAllHolidaysBySearchParamerters](file:///app/fineract-provider/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayReadPlatformServiceImpl.java#L82-L110)
++  - 读取 office 维度节假日列表。
++- [HolidayReadPlatformServiceImpl.retrieveRepaymentScheduleUpdationTyeOptions](file:///app/fineract-provider/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayReadPlatformServiceImpl.java#L134-L140)
++  - 提供 holiday 遇到后如何改期的配置项。
++
++从“还款计划执行层”看：
++
++- schedule 生成本身并不会直接调用一个名为 `WorkingDaysService` / `HolidayService` 的领域服务去逐期计算。
++- 当前实现是：先由 `LoanUtilService / LoanScheduleAssembler` 读取配置，再由 `DefaultScheduledDateGenerator + WorkingDaysUtil + HolidayUtil` 在排程过程中真正执行日期修正。
++
++## 4. 潜在问题与改进建议
++
++下面的问题均来自当前代码实现本身，不是抽象层面的“最佳实践建议”。
++
++### 问题 1：等额本息 PMT 计算硬编码为 30/365，忽略产品实际 day-count 配置
++
++- **问题描述**
++  - 在 cumulative declining-balance 等额本息路径中，EMI 的 PMT 计算并没有使用贷款真实配置的 `daysInMonthType / daysInYearType`，而是写死成 `30/365`。
++  - 结果是“EMI 的求解基准”和“每期利息的实际计提基准”不一致。
++
++- **代码位置**
++  - [LoanApplicationTerms.pmtForInstallment](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1004-L1017)
++  - [LoanApplicationTerms.periodicInterestRate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1399-L1460)
++
++- **影响场景**
++  - 产品配置为 `Actual/360`、`Actual/365`、`30/360` 时，EMI 可能系统性偏大或偏小。
++  - 利率较高、期限较长、双月/季月还款、多币种高精度场景下，期末尾差会被放大。
++
++- **改进建议**
++  - PMT 计算时改用当前贷款真实的 day-count 参数。
++  - 建议把 “periodic rate for PMT” 与 “periodic rate for accrued interest” 收敛到同一策略对象中。
++
++```text
++建议方向：
++periodicRateForPmt = periodicInterestRate(calculator, mc, this.daysInMonthType, this.daysInYearType, periodStart, periodEnd, true)
++```
++
++### 问题 2：interestChargedFromDate 的 grace fraction 算法对 repaidEvery>1 明显失真
++
++- **问题描述**
++  - `calculateRepaymentPeriodFraction()` 使用了 `daysGrace / 30 * repaidEvery`、`daysGrace / 365 * repaidEvery` 这类公式。
++  - 对于双月、季度、按天多间隔还款，这个“分期占比”会被放大，甚至大于 1，进而导致 grace 处理错误。
++
++- **代码位置**
++  - [DefaultPaymentPeriodsInOneYearCalculator.calculatePortionOfRepaymentPeriodInterestChargingGrace](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java#L62-L81)
++  - [DefaultPaymentPeriodsInOneYearCalculator.calculateRepaymentPeriodFraction](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultPaymentPeriodsInOneYearCalculator.java#L83-L96)
++
++- **影响场景**
++  - `repaymentEvery > 1` 的月/周/天频贷款。
++  - 使用 `interestChargedFromDate` 的宽限计息场景。
++  - 会导致首期或某一期的利息被过度减免，或被错误清零。
++
++- **改进建议**
++  - 应该计算“grace 天数 / 当前实际计息期总天数”，而不是乘以 `repaidEvery`。
++  - 可直接用当前期起止日算分母，避免用固定 `30/365/7` 推导。
++
++```text
++periodFraction = graceDays / totalDaysInThisRepaymentPeriod
++```
++
++### 问题 3：非工作日配置为 SAME_DAY 时，存在死循环/线程卡死风险
++
++- **问题描述**
++  - `checkAndUpdateWorkingDayIfRepaymentDateIsNonWorkingDay()` 在 `while (isNonWorkingDay(...))` 循环中调用 `WorkingDaysUtil.updateWorkingDayIfRepaymentDateIsNonWorkingDay()`。
++  - 但当 repayment reschedule type 为 `SAME_DAY` 时，`getOffSetDateIfNonWorkingDay()` 会直接原样返回该日期，循环条件永远不变。
++
++- **代码位置**
++  - [DefaultScheduledDateGenerator.checkAndUpdateWorkingDayIfRepaymentDateIsNonWorkingDay](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/DefaultScheduledDateGenerator.java#L290-L307)
++  - [WorkingDaysUtil.getOffSetDateIfNonWorkingDay](file:///app/fineract-core/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysUtil.java#L33-L55)
++  - `SAME_DAY` 选项来自 [WorkingDaysReadPlatformServiceImpl.repaymentRescheduleTypeOptions](file:///app/fineract-provider/src/main/java/org/apache/fineract/organisation/workingdays/service/WorkingDaysReadPlatformServiceImpl.java#L98-L102)
++
++- **影响场景**
++  - 贷款到期日落在周末/非工作日，且全局 working days 配置为 `SAME_DAY`。
++  - 大批量贷款 schedule 预览或重新生成时，线程可能长时间卡住。
++
++- **改进建议**
++  - 在进入循环前，显式拦截 `SAME_DAY`。
++  - 方案 1：若允许到期日在非工作日，则直接返回原日期，不进入 while。
++  - 方案 2：若 schedule 不允许非工作日，则在配置层禁止 `SAME_DAY` 与排程联用。
++
++```text
++if (repaymentRescheduleType == SAME_DAY) {
++    return;
++}
++```
++
++### 问题 4：cumulative schedule 保存了 daysInYearCustomStrategy，但计息路径未真正使用
++
++- **问题描述**
++  - `LoanApplicationTerms` 持有 `daysInYearCustomStrategy`，但 cumulative 计息核心 `periodicInterestRate()` 并未引用该字段。
++  - 这意味着在 cumulative schedule 下，`ACTUAL + FULL_LEAP_YEAR` 与 `ACTUAL + FEB_29_PERIOD_ONLY` 可能无法体现差异。
++
++- **代码位置**
++  - 字段保存： [LoanApplicationTerms.daysInYearCustomStrategy](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L290-L291)
++  - 累计式计息： [LoanApplicationTerms.periodicInterestRate](file:///app/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/loanschedule/domain/LoanApplicationTerms.java#L1399-L1460)
++  - progressive 的正确使用参考： [ProgressiveEMICalculator.getNumberOfDays](file:///app/fineract-progressive-loan/src/main/java/org/apache/fineract/portfolio/loanproduct/calc/ProgressiveEMICalculator.java#L1342-L1352)
++
++- **影响场景**
++  - 闰年跨期贷款。
++  - 对 `Actual` 计息且要求严格区分 `FULL_LEAP_YEAR` / `FEB_29_PERIOD_ONLY` 的机构。
++  - schedule 预览与 progressive 产品表现可能不一致。
++
++- **改进建议**
++  - 将 cumulative schedule 的 day-count 计算抽象成统一策略接口，与 progressive 共享同一套“闰年日数判定”逻辑。
++  - 至少在 `periodicInterestRate()` 内引入 `daysInYearCustomStrategy` 分支。
++
++## 5. 结论
++
++- 当前 REST 入口并不是直接“算一张全新 schedule”，而是先把 variable installment 请求写入/合并到贷款 term variations，再基于贷款当前状态重新生成 repayment schedule。
++- 真正的 schedule 主循环在 `AbstractCumulativeLoanScheduleGenerator`，而 Declining Balance 的本金/利息拆分由 `CumulativeDecliningBalanceInterestLoanScheduleGenerator + LoanApplicationTerms` 完成。
++- 工作日、节假日并不是后处理步骤，而是在每个候选 due date 生成时就参与调整。
++- 当前实现的主要风险点集中在：
++  - EMI 与 day-count 基准不一致；
++  - grace fraction 换算错误；
++  - SAME_DAY 非工作日策略可能死循环；
++  - cumulative 对 leap-year custom strategy 支持不完整。

@@ -1,0 +1,1025 @@
+diff --git a/.github/workflows/build-postgresql.yml b/.github/workflows/build-postgresql.yml
+index 4cc23d091..50d18b1ae 100644
+--- a/.github/workflows/build-postgresql.yml
++++ b/.github/workflows/build-postgresql.yml
+@@ -58,7 +58,7 @@ jobs:
+           validate-wrappers: true
+ 
+       - name: Build the image
+-        run: ./gradlew --no-daemon --console=plain :fineract-provider:jibDockerBuild -Djib.to.image=$IMAGE_NAME -x test -x cucumber -x buildJavaSdk
++        run: ./gradlew --no-daemon --console=plain :fineract-loan:jibDockerBuild -Djib.to.image=$IMAGE_NAME -x test -x cucumber -x buildJavaSdk
+ 
+       - name: Start dependencies
+         run: docker compose -f "$COMPOSE_FILE" up -d db localstack mock-oauth2-server
+@@ -76,7 +76,7 @@ jobs:
+         run: docker ps
+ 
+       - name: Wait for Fineract to be ready
+-        run: curl -f -k --retry 60 --retry-all-errors --connect-timeout 30 --retry-delay 30 https://localhost:8443/fineract-provider/actuator/health
++        run: curl -f -k --retry 60 --retry-all-errors --connect-timeout 30 --retry-delay 30 https://localhost:8443/fineract-loan/actuator/health
+ 
+       - name: Generate test class list
+         run: |
+@@ -91,7 +91,7 @@ jobs:
+           FINERACT_AUTH_MODE=basic
+ 
+           wait_for_fineract() {
+-            curl -f -k --retry 60 --retry-all-errors --connect-timeout 30 --retry-delay 30 https://localhost:8443/fineract-provider/actuator/health
++            curl -f -k --retry 60 --retry-all-errors --connect-timeout 30 --retry-delay 30 https://localhost:8443/fineract-loan/actuator/health
+           }
+ 
+           configure_sms_gateway_host() {
+diff --git a/build.gradle b/build.gradle
+index 6cfc947e9..1faebd169 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -36,7 +36,6 @@ buildscript {
+                 'fineract-command-async',
+                 'fineract-command-disruptor',
+                 'fineract-accounting',
+-                'fineract-provider',
+                 'fineract-branch',
+                 'fineract-document',
+                 'fineract-investor',
+@@ -74,7 +73,6 @@ buildscript {
+                 'fineract-command-jdbc',
+                 'fineract-command-audit',
+                 'fineract-accounting',
+-                'fineract-provider',
+                 'fineract-investor',
+                 'fineract-charge',
+                 'fineract-rates',
+@@ -166,7 +164,7 @@ gitVersioning.apply {
+ }
+ 
+ ext['groovy.version'] = '4.0.17'
+-ext['swaggerFile'] = "$rootDir/fineract-provider/build/resources/main/static/fineract.json".toString()
++ext['swaggerFile'] = "$rootDir/fineract-war/build/resources/main/static/fineract.json".toString()
+ 
+ // Apply static weaving configuration to all subprojects
+ subprojects { subproject ->
+diff --git a/custom/acme/event/externalevent/dependencies.gradle b/custom/acme/event/externalevent/dependencies.gradle
+index 8ca9727e6..0ff6498e1 100644
+--- a/custom/acme/event/externalevent/dependencies.gradle
++++ b/custom/acme/event/externalevent/dependencies.gradle
+@@ -20,6 +20,5 @@
+ dependencies {
+     implementation(project(':fineract-core'))
+     implementation(project(':fineract-loan'))
+-    implementation(project(':fineract-provider'))
+     implementation('org.springframework.boot:spring-boot-starter-data-jpa')
+ }
+diff --git a/custom/acme/event/starter/dependencies.gradle b/custom/acme/event/starter/dependencies.gradle
+index d377d574a..42f1fe8c4 100644
+--- a/custom/acme/event/starter/dependencies.gradle
++++ b/custom/acme/event/starter/dependencies.gradle
+@@ -19,6 +19,5 @@
+ 
+ dependencies {
+     implementation(project(':fineract-core'))
+-    implementation(project(':fineract-provider'))
+     implementation('org.springframework.boot:spring-boot-starter')
+ }
+diff --git a/custom/acme/loan/cob/dependencies.gradle b/custom/acme/loan/cob/dependencies.gradle
+index ae2a5f48a..5e5f3d8cd 100644
+--- a/custom/acme/loan/cob/dependencies.gradle
++++ b/custom/acme/loan/cob/dependencies.gradle
+@@ -21,6 +21,5 @@ dependencies {
+     implementation(project(':fineract-core'))
+     implementation(project(':fineract-cob'))
+     implementation(project(':fineract-loan'))
+-    implementation(project(':fineract-provider'))
+     implementation('org.springframework.boot:spring-boot-starter-data-jpa')
+ }
+diff --git a/custom/acme/loan/job/dependencies.gradle b/custom/acme/loan/job/dependencies.gradle
+index 60b496193..bdbfc7331 100644
+--- a/custom/acme/loan/job/dependencies.gradle
++++ b/custom/acme/loan/job/dependencies.gradle
+@@ -20,7 +20,6 @@
+ dependencies {
+     implementation(project(':fineract-core'))
+     implementation(project(':fineract-loan'))
+-    implementation(project(':fineract-provider'))
+     implementation('org.springframework.batch:spring-batch-integration')
+     implementation('org.springframework.boot:spring-boot-starter-data-jpa')
+ }
+diff --git a/custom/acme/loan/processor/dependencies.gradle b/custom/acme/loan/processor/dependencies.gradle
+index 5db9e6b15..805007a50 100644
+--- a/custom/acme/loan/processor/dependencies.gradle
++++ b/custom/acme/loan/processor/dependencies.gradle
+@@ -20,5 +20,4 @@
+ dependencies {
+     implementation(project(':fineract-core'))
+     implementation(project(':fineract-loan'))
+-    implementation(project(':fineract-provider'))
+ }
+diff --git a/custom/acme/loan/starter/dependencies.gradle b/custom/acme/loan/starter/dependencies.gradle
+index 9b87d70a3..fc852fbc2 100644
+--- a/custom/acme/loan/starter/dependencies.gradle
++++ b/custom/acme/loan/starter/dependencies.gradle
+@@ -21,11 +21,9 @@ dependencies {
+     implementation(project(':fineract-core'))
+     implementation(project(':fineract-cob'))
+     implementation(project(':fineract-loan'))
+-    implementation(project(':fineract-provider'))
+     implementation(project(':custom:acme:loan:cob'))
+     implementation(project(':custom:acme:loan:processor'))
+     implementation('org.springframework.boot:spring-boot-starter')
+-    testImplementation(project(':fineract-provider'))
+     testImplementation('org.springframework.boot:spring-boot-starter-jdbc')
+     testImplementation('org.springframework.boot:spring-boot-starter-data-jpa')
+ }
+diff --git a/custom/acme/note/service/dependencies.gradle b/custom/acme/note/service/dependencies.gradle
+index 9bea53177..1eceed1f8 100644
+--- a/custom/acme/note/service/dependencies.gradle
++++ b/custom/acme/note/service/dependencies.gradle
+@@ -19,6 +19,5 @@
+ 
+ dependencies {
+     implementation(project(':fineract-core'))
+-    implementation(project(':fineract-provider'))
+     compileOnly('org.springframework.boot:spring-boot-autoconfigure')
+ }
+diff --git a/custom/acme/note/starter/dependencies.gradle b/custom/acme/note/starter/dependencies.gradle
+index d0196d679..179d11850 100644
+--- a/custom/acme/note/starter/dependencies.gradle
++++ b/custom/acme/note/starter/dependencies.gradle
+@@ -23,7 +23,6 @@ dependencies {
+     testImplementation(project(':fineract-core'))
+     testImplementation(project(':fineract-loan'))
+     testImplementation(project(':fineract-savings'))
+-    testImplementation(project(':fineract-provider'))
+     testImplementation('org.springframework.boot:spring-boot-starter-jdbc')
+     testImplementation('org.springframework.boot:spring-boot-starter-data-jpa')
+ }
+diff --git a/custom/docker/build.gradle b/custom/docker/build.gradle
+index 4ed3f7a96..e6d3f1576 100644
+--- a/custom/docker/build.gradle
++++ b/custom/docker/build.gradle
+@@ -59,7 +59,7 @@ jib {
+ 
+     dependencies {
+         implementation project(':fineract-core')
+-        implementation project(':fineract-provider')
++        implementation project(':fineract-loan')
+         // NOTE: dynamically load all custom modules
+         file("${rootDir}/custom").eachDir { companyDir ->
+             if('build' != companyDir.name && 'docker' != companyDir.name) {
+diff --git a/fineract-accounting/dependencies.gradle b/fineract-accounting/dependencies.gradle
+index 907e72eac..43129ecbd 100644
+--- a/fineract-accounting/dependencies.gradle
++++ b/fineract-accounting/dependencies.gradle
+@@ -18,63 +18,56 @@
+  */
+ 
+ dependencies {
+-    // Never use "compile" scope, but make all dependencies either 'implementation', 'runtimeOnly' or 'testCompile'.
+-    // Note that we never use 'api', because Fineract at least currently is a simple monolithic application ("WAR"), not a library.
+-    // We also (normally should have) no need to ever use 'compileOnly'.
+ 
+-    // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+-    //
+     implementation(project(path: ':fineract-core'))
+     implementation(project(path: ':fineract-charge'))
+-    implementation('org.apache.avro:avro')
++    implementation(libs.avro)
+     implementation(
+             project(path: ':fineract-avro-schemas')
+             )
+ 
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
++            libs.spring.boot.starter.web,
++            libs.spring.boot.starter.security,
++            libs.spring.boot.starter.batch,
++            libs.spring.batch.integration,
++            libs.jakarta.ws.rs.api,
++            libs.jersey.media.multipart,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commons.lang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.json.path,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swagger.annotations.jakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofit2.converter.gson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdoc.openapi.starter.webmvc.ui,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
++            libs.resilience4j.spring.boot3,
+             )
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    compileOnly libs.spotbugs.annotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstruct.processor
++    implementation (libs.spring.boot.starter.data.jpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselink) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+-    // testCompile dependencies are ONLY used in src/test, not src/main.
+-    // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+-    //
+-    testImplementation( 'io.github.classgraph:classgraph' )
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++
++    testImplementation( libs.classgraph )
++    testImplementation (libs.spring.boot.starter.test) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
++    testImplementation libs.mockito.inline
+ }
+diff --git a/fineract-client-feign/build.gradle b/fineract-client-feign/build.gradle
+index f46663965..7150fd9a2 100644
+--- a/fineract-client-feign/build.gradle
++++ b/fineract-client-feign/build.gradle
+@@ -62,7 +62,7 @@ tasks.register('buildJavaSdk', org.openapitools.generator.gradle.plugin.tasks.Ge
+             useJakartaEe               : 'true'
+ 
+     ]
+-    dependsOn(':fineract-provider:resolve')
++    dependsOn(':fineract-war:resolve')
+ }
+ 
+ sourceSets {
+diff --git a/fineract-cob/dependencies.gradle b/fineract-cob/dependencies.gradle
+index 8feb9c1a4..9b2efd2e1 100644
+--- a/fineract-cob/dependencies.gradle
++++ b/fineract-cob/dependencies.gradle
+@@ -27,6 +27,7 @@ dependencies {
+     implementation(project(path: ':fineract-command'))
+     implementation(project(path: ':fineract-validation'))
+     implementation(project(path: ':fineract-core'))
++    implementation(project(path: ':fineract-loan'))
+ 
+ 
+     // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+diff --git a/fineract-core/dependencies.gradle b/fineract-core/dependencies.gradle
+index 688b002c1..18b6b82b3 100644
+--- a/fineract-core/dependencies.gradle
++++ b/fineract-core/dependencies.gradle
+@@ -19,112 +19,102 @@
+ 
+ dependencies {
+ 
+-    // Never use "compile" scope, but make all dependencies either 'implementation', 'runtimeOnly' or 'testCompile'.
+-    // Note that we never use 'api', because Fineract at least currently is a simple monolithic application ("WAR"), not a library.
+-    // We also (normally should have) no need to ever use 'compileOnly'.
+-
+     implementation(project(path: ':fineract-avro-schemas'))
+     implementation(project(path: ':fineract-command'))
+     implementation(project(path: ':fineract-validation'))
+ 
+ 
+-    // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-validation',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
+-            'org.apache.avro:avro',
++            libs.spring.boot.starter.web,
++            libs.spring.boot.starter.security,
++            libs.spring.boot.starter.validation,
++            libs.spring.boot.starter.batch,
++            libs.spring.batch.integration,
++            libs.jakarta.ws.rs.api,
++            libs.jersey.media.multipart,
++            libs.avro,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commons.lang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.json.path,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swagger.annotations.jakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofit2.converter.gson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdoc.openapi.starter.webmvc.ui,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
+-            'org.apache.httpcomponents:httpcore',
++            libs.resilience4j.spring.boot3,
++            libs.httpcore,
+             )
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    implementation (libs.spring.boot.starter.data.jpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselink) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+-    implementation('org.springframework.boot:spring-boot-starter-jersey') {
++    implementation(libs.spring.boot.starter.jersey) {
+         exclude group: 'org.glassfish.hk2.external', module: 'aopalliance-repackaged'
+         exclude group: 'org.glassfish.hk2', module: 'hk2-runlevel'
+         exclude group: 'org.hibernate.validator', module: 'hibernate-validator'
+         exclude group: 'jakarta.activation', module: 'jakarta.activation-api'
+     }
+-    implementation('org.dom4j:dom4j') {
++    implementation(libs.dom4j) {
+         exclude group: 'javax.xml.bind'
+     }
+-    implementation ('jakarta.xml.bind:jakarta.xml.bind-api') {
++    implementation (libs.jakarta.xml.bind.api) {
+         exclude group: 'jakarta.activation'
+     }
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    implementation (libs.spring.boot.starter.data.jpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselink) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+-    runtimeOnly('org.glassfish.jaxb:jaxb-runtime') {
++    runtimeOnly(libs.jaxb.runtime) {
+         exclude group: 'com.sun.activation'
+     }
+ 
+-    // runtimeOnly dependencies are things that Fineract code has no direct compile time dependency on, but which must be present at run-time
+     runtimeOnly(
+ 
+-            // Although fineract (at the time of writing) doesn't have any compile time dep. on httpclient,
+-            // it's useful to have this for the Spring Boot TestRestTemplate http://docs.spring.io/spring-boot/docs/current-SNAPSHOT/reference/htmlsingle/#boot-features-rest-templates-test-utility
+-            'org.apache.httpcomponents:httpclient'
++            libs.httpclient
+             )
+ 
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
++    compileOnly libs.spotbugs.annotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstruct.processor
++
++    implementation libs.logback.json.classic
++    implementation libs.logback.jackson
++    implementation libs.janino
+ 
+-    implementation 'ch.qos.logback.contrib:logback-json-classic'
+-    implementation 'ch.qos.logback.contrib:logback-jackson'
+-    implementation 'org.codehaus.janino:janino'
++    implementation libs.commons.math3
+ 
+-    implementation 'org.apache.commons:commons-math3'
++    implementation libs.classgraph
+ 
+-    implementation 'io.github.classgraph:classgraph'
+-    // testCompile dependencies are ONLY used in src/test, not src/main.
+-    // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+-    //
+-    testImplementation( 'io.github.classgraph:classgraph')
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++    testImplementation( libs.classgraph)
++    testImplementation (libs.spring.boot.starter.test) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    implementation ('org.mnode.ical4j:ical4j') {
++    implementation (libs.ical4j) {
+         exclude group: 'commons-logging'
+         exclude group: 'javax.activation'
+         exclude group: 'com.sun.mail', module: 'javax.mail'
+     }
+-    implementation ('org.quartz-scheduler:quartz') {
++    implementation (libs.quartz) {
+         exclude group: 'com.zaxxer', module: 'HikariCP-java7'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
+-    implementation('org.apache.avro:avro')
++    testImplementation libs.mockito.inline
++    implementation(libs.avro)
+     implementation(
+             project(path: ':fineract-avro-schemas')
+             )
+diff --git a/fineract-loan/dependencies.gradle b/fineract-loan/dependencies.gradle
+index f18abff89..96fa2497e 100644
+--- a/fineract-loan/dependencies.gradle
++++ b/fineract-loan/dependencies.gradle
+@@ -18,12 +18,7 @@
+  */
+ 
+ dependencies {
+-    // Never use "compile" scope, but make all dependencies either 'implementation', 'runtimeOnly' or 'testCompile'.
+-    // Note that we never use 'api', because Fineract at least currently is a simple monolithic application ("WAR"), not a library.
+-    // We also (normally should have) no need to ever use 'compileOnly'.
+ 
+-    // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+-    //
+     implementation(project(path: ':fineract-core'))
+     implementation(project(path: ':fineract-cob'))
+     implementation(project(path: ':fineract-accounting'))
+@@ -32,58 +27,56 @@ dependencies {
+     implementation(project(path: ':fineract-tax'))
+ 
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
++            libs.spring.boot.starter.web,
++            libs.spring.boot.starter.security,
++            libs.spring.boot.starter.batch,
++            libs.spring.batch.integration,
+ 
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
++            libs.jakarta.ws.rs.api,
++            libs.jersey.media.multipart,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commons.lang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.json.path,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swagger.annotations.jakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofit2.converter.gson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdoc.openapi.starter.webmvc.ui,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
+-            'org.apache.httpcomponents:httpcore',
+-            'org.apache.commons:commons-collections4'
++            libs.resilience4j.spring.boot3,
++            libs.httpcore,
++            libs.commons.collections4
+ 
+             )
+-    implementation ('org.mnode.ical4j:ical4j') {
++    implementation (libs.ical4j) {
+         exclude group: 'commons-logging'
+         exclude group: 'javax.activation'
+         exclude group: 'com.sun.mail', module: 'javax.mail'
+     }
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    compileOnly libs.spotbugs.annotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstruct.processor
++    implementation (libs.spring.boot.starter.data.jpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselink) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+-    // testCompile dependencies are ONLY used in src/test, not src/main.
+-    // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+-    //
+-    testImplementation( 'io.github.classgraph:classgraph' )
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++
++    testImplementation( libs.classgraph )
++    testImplementation (libs.spring.boot.starter.test) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
++    testImplementation libs.mockito.inline
+ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+similarity index 100%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+similarity index 100%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+similarity index 100%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+similarity index 97%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+index 208bdebac..1fa1376be 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+@@ -43,14 +43,13 @@ public class AdHocQuerySearchConditions {
+     private final BigDecimal maxOutstandingAmount;
+     private final BigDecimal outstandingAmount;
+ 
+-    public static AdHocQuerySearchConditions instance(final List<String> loanStatus, final List<Long> loanProducts,
+-            final List<Long> offices, final String loanDateOption, final LocalDate loanFromDate, final LocalDate loanToDate,
++    public static AdHocQuerySearchConditions instance(final List<String> loanStatus, final List<Long> loanProducts, final List<Long> offices,
++            final String loanDateOption, final LocalDate loanFromDate, final LocalDate loanToDate,
+             final Boolean includeOutStandingAmountPercentage, final String outStandingAmountPercentageCondition,
+             final BigDecimal minOutStandingAmountPercentage, final BigDecimal maxOutStandingAmountPercentage,
+             final BigDecimal outStandingAmountPercentage, final Boolean includeOutstandingAmountParamName,
+             final String outstandingAmountCondition, final BigDecimal minOutstandingAmount, final BigDecimal maxOutstandingAmount,
+             final BigDecimal outstandingAmount) {
+-
+         return new AdHocQuerySearchConditions(loanStatus, loanProducts, offices, loanDateOption, loanFromDate, loanToDate,
+                 includeOutStandingAmountPercentage, outStandingAmountPercentageCondition, minOutStandingAmountPercentage,
+                 maxOutStandingAmountPercentage, outStandingAmountPercentage, includeOutstandingAmountParamName, outstandingAmountCondition,
+diff --git a/fineract-savings/dependencies.gradle b/fineract-savings/dependencies.gradle
+index b64450a5d..f33d4e4e6 100644
+--- a/fineract-savings/dependencies.gradle
++++ b/fineract-savings/dependencies.gradle
+@@ -25,6 +25,7 @@ dependencies {
+     // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+     //
+     implementation(project(path: ':fineract-core'))
++    implementation(project(path: ':fineract-loan'))
+     implementation(project(path: ':fineract-cob'))
+     implementation(project(path: ':fineract-accounting'))
+     implementation(project(path: ':fineract-charge'))
+diff --git a/fineract-war/build.gradle b/fineract-war/build.gradle
+index b7f5d9197..c394ccbe9 100644
+--- a/fineract-war/build.gradle
++++ b/fineract-war/build.gradle
+@@ -90,7 +90,6 @@ dependencies {
+     implementation project(':fineract-loan-origination')
+     implementation project(':fineract-progressive-loan')
+     implementation project(':fineract-savings')
+-    implementation project(':fineract-provider')
+     implementation project(':fineract-working-capital-loan')
+ }
+ 
+@@ -121,7 +120,7 @@ distributions {
+             from ("$rootDir/fineract-avro-schemas/build/libs/") {
+                 include 'fineract-avro-schemas-*.jar'
+             }
+-            from ("$rootDir/fineract-provider/build/libs/") {
++            from ("$rootDir/fineract-war/build/libs/") {
+                 include 'fineract-provider-*.jar'
+                 exclude 'fineract-provider-*-plain.jar'
+             }
+@@ -174,7 +173,7 @@ tasks.named('binaryDistTar') {
+     
+     // Track dependencies explicitly
+     dependsOn(war, ':fineract-client:jar', ':fineract-avro-schemas:jar', 
+-              ':fineract-provider:build', ':fineract-doc:doc',
++              ':fineract-war:jar', ':fineract-doc:doc',
+               ':fineract-client:javadocJar', ':fineract-client:sourcesJar',
+               ':fineract-avro-schemas:javadocJar', ':fineract-avro-schemas:sourcesJar')
+ }
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+new file mode 100644
+index 000000000..9bd34e15b
+--- /dev/null
++++ b/gradle/libs.versions.toml
+@@ -0,0 +1,266 @@
++[versions]
++spring-boot = "3.5.14"
++eclipselink = "4.0.9"
++jersey = "3.1.11"
++lombok = "1.18.46"
++mapstruct = "1.6.3"
++resilience4j = "2.4.0"
++testcontainers = "1.21.4"
++okhttp = "4.12.0"
++slf4j = "2.0.17"
++micrometer = "1.16.5"
++spring-cloud-aws = "4.0.2"
++opentelemetry = "1.62.0"
++kotlin = "2.3.21"
++junit = "5.14.4"
++jackson = "2.21.3"
++cucumber = "7.34.3"
++mockito = "5.23.0"
++aws-sdk = "2.44.4"
++avro = "1.12.1"
++guava = "33.6.0-jre"
++gson = "2.14.0"
++commons-lang3 = "3.20.0"
++commons-collections4 = "4.5.0"
++commons-io = "2.22.0"
++commons-compress = "1.28.0"
++commons-csv = "1.14.1"
++commons-math3 = "3.6.1"
++retrofit2 = "2.12.0"
++swagger = "2.2.49"
++springdoc = "2.8.17"
++jakarta-ws-rs = "3.1.0"
++jakarta-xml-bind = "4.0.5"
++jakarta-annotation = "3.0.0"
++jakarta-activation = "2.1.4"
++jakarta-validation = "3.1.1"
++jakarta-jms = "3.1.0"
++jakarta-management = "1.1.4"
++hibernate-validator = "9.1.0.Final"
++logback = "1.5.32"
++logback-contrib = "0.1.5"
++janino = "3.1.12"
++liquibase = "4.33.0"
++poi = "5.5.1"
++tika = "3.3.0"
++ehcache = "3.12.0"
++quartz = "2.5.2"
++ical4j = "3.2.19"
++openpdf = "3.0.4"
++mustache = "0.9.14"
++json-path = "3.0.0"
++dom4j = "2.2.0"
++esapi = "2.7.0.0"
++classgraph = "4.8.184"
++awaitility = "4.3.0"
++spotbugs-annotations = "4.9.8"
++mock-server = "5.14.0"
++wiremock = "3.13.2"
++groovy = "5.0.6"
++rest-assured = "5.5.7"
++assertj = "3.27.7"
++mariadb = "3.5.8"
++postgresql = "42.7.11"
++mysql = "9.7.0"
++mockito-inline = "5.2.0"
++reflections = "0.10.2"
++jmh = "1.37"
++disruptor = "4.0.0"
++netty = "4.1.133.Final"
++bouncycastle = "1.84"
++spring-security = "6.5.10"
++spring-core = "6.2.18"
++thymeleaf = "3.1.5.RELEASE"
++tomcat = "10.1.55"
++httpclient = "4.5.14"
++httpcore5 = "5.4"
++greenmail = "2.0.1"
++image-comparison = "4.4.0"
++icu4j = "78.3"
++spring-icu4j = "0.5.2"
++nimbus-jose-jwt = "10.9"
++activemq = "6.2.5"
++msk-iam-auth = "2.3.6"
++commons-email = "1.6.0"
++jakarta-mail = "2.0.2"
++jaxb-runtime = "2.3.6"
++cache-api = "1.1.1"
++sshd = "2.17.1"
++jgit = "7.6.0.202603022253-r"
++svnkit = "1.10.13"
++semver4j = "3.1.0"
++text-io = "3.4.1"
++webjars-locator = "0.59"
++commons-codec = "1.22.0"
++jsr305 = "3.0.2"
++gson-fire = "1.9.0"
++rxjava2 = "2.2.21"
++commons-beanutils = "1.11.0"
++lz4 = "1.11.0"
++spring-restdocs = "3.0.5"
++groovy-version = "4.0.17"
++
++[libraries]
++spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web" }
++spring-boot-starter-security = { module = "org.springframework.boot:spring-boot-starter-security" }
++spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation" }
++spring-boot-starter-batch = { module = "org.springframework.boot:spring-boot-starter-batch" }
++spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa" }
++spring-boot-starter-jersey = { module = "org.springframework.boot:spring-boot-starter-jersey" }
++spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
++spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
++spring-boot-starter-cache = { module = "org.springframework.boot:spring-boot-starter-cache" }
++spring-boot-starter-oauth2-authorization-server = { module = "org.springframework.boot:spring-boot-starter-oauth2-authorization-server" }
++spring-boot-starter-oauth2-resource-server = { module = "org.springframework.boot:spring-boot-starter-oauth2-resource-server" }
++spring-boot-starter-data-jdbc = { module = "org.springframework.boot:spring-boot-starter-data-jdbc" }
++spring-boot-starter-integration = { module = "org.springframework.boot:spring-boot-starter-integration" }
++spring-boot-starter-thymeleaf = { module = "org.springframework.boot:spring-boot-starter-thymeleaf" }
++spring-boot-starter-tomcat = { module = "org.springframework.boot:spring-boot-starter-tomcat" }
++spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
++spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc" }
++spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
++spring-boot-autoconfigure-processor = { module = "org.springframework.boot:spring-boot-autoconfigure-processor" }
++spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
++spring-batch-integration = { module = "org.springframework.batch:spring-batch-integration" }
++spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
++spring-jms = { module = "org.springframework:spring-jms" }
++spring-context-support = { module = "org.springframework:spring-context-support" }
++spring-core = { module = "org.springframework:spring-core", version.ref = "spring-core" }
++spring-security-core = { module = "org.springframework.security:spring-security-core", version.ref = "spring-security" }
++
++eclipselink = { module = "org.eclipse.persistence:org.eclipse.persistence.jpa", version.ref = "eclipselink" }
++jersey-media-multipart = { module = "org.glassfish.jersey.media:jersey-media-multipart" }
++jakarta-ws-rs-api = { module = "jakarta.ws.rs:jakarta.ws.rs-api", version.ref = "jakarta-ws-rs" }
++
++lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
++mapstruct = { module = "org.mapstruct:mapstruct", version.ref = "mapstruct" }
++mapstruct-processor = { module = "org.mapstruct:mapstruct-processor", version.ref = "mapstruct" }
++
++resilience4j-spring-boot3 = { module = "io.github.resilience4j:resilience4j-spring-boot3" }
++
++guava = { module = "com.google.guava:guava", version.ref = "guava" }
++gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
++commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
++commons-collections4 = { module = "org.apache.commons:commons-collections4", version.ref = "commons-collections4" }
++commons-io = { module = "commons-io:commons-io", version.ref = "commons-io" }
++commons-csv = { module = "org.apache.commons:commons-csv", version.ref = "commons-csv" }
++commons-math3 = { module = "org.apache.commons:commons-math3", version.ref = "commons-math3" }
++
++json-path = { module = "com.jayway.jsonpath:json-path", version.ref = "json-path" }
++
++swagger-annotations-jakarta = { module = "io.swagger.core.v3:swagger-annotations-jakarta", version.ref = "swagger" }
++swagger-jaxrs2-jakarta = { module = "io.swagger.core.v3:swagger-jaxrs2-jakarta", version.ref = "swagger" }
++
++springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
++
++retrofit2-converter-gson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "retrofit2" }
++retrofit2-retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit2" }
++okhttp = { module = "com.squareup.okhttp3:okhttp" }
++okhttp-urlconnection = { module = "com.squareup.okhttp3:okhttp-urlconnection" }
++
++avro = { module = "org.apache.avro:avro", version.ref = "avro" }
++
++httpcore = { module = "org.apache.httpcomponents:httpcore" }
++httpclient = { module = "org.apache.httpcomponents:httpclient", version.ref = "httpclient" }
++
++logback-json-classic = { module = "ch.qos.logback.contrib:logback-json-classic", version.ref = "logback-contrib" }
++logback-jackson = { module = "ch.qos.logback.contrib:logback-jackson", version.ref = "logback-contrib" }
++janino = { module = "org.codehaus.janino:janino", version.ref = "janino" }
++
++ical4j = { module = "org.mnode.ical4j:ical4j", version.ref = "ical4j" }
++quartz = { module = "org.quartz-scheduler:quartz", version.ref = "quartz" }
++
++classgraph = { module = "io.github.classgraph:classgraph", version.ref = "classgraph" }
++
++mockito-inline = { module = "org.mockito:mockito-inline", version.ref = "mockito-inline" }
++
++spotbugs-annotations = { module = "com.github.spotbugs:spotbugs-annotations", version.ref = "spotbugs-annotations" }
++
++jakarta-xml-bind-api = { module = "jakarta.xml.bind:jakarta.xml.bind-api", version.ref = "jakarta-xml-bind" }
++jakarta-jms-api = { module = "jakarta.jms:jakarta.jms-api", version.ref = "jakarta-jms" }
++jakarta-management-j2ee-api = { module = "jakarta.management.j2ee:jakarta.management.j2ee-api", version.ref = "jakarta-management" }
++
++jaxb-runtime = { module = "org.glassfish.jaxb:jaxb-runtime", version.ref = "jaxb-runtime" }
++dom4j = { module = "org.dom4j:dom4j", version.ref = "dom4j" }
++
++micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
++micrometer-registry-otlp = { module = "io.micrometer:micrometer-registry-otlp" }
++micrometer-registry-cloudwatch2 = { module = "io.micrometer:micrometer-registry-cloudwatch2" }
++
++spring-cloud-aws-starter = { module = "io.awspring.cloud:spring-cloud-aws-starter" }
++
++liquibase-core = { module = "org.liquibase:liquibase-core", version.ref = "liquibase" }
++
++poi = { module = "org.apache.poi:poi", version.ref = "poi" }
++poi-ooxml = { module = "org.apache.poi:poi-ooxml", version.ref = "poi" }
++tika-core = { module = "org.apache.tika:tika-core", version.ref = "tika" }
++tika-parser-microsoft-module = { module = "org.apache.tika:tika-parser-microsoft-module", version.ref = "tika" }
++tika-parser-miscoffice-module = { module = "org.apache.tika:tika-parser-miscoffice-module", version.ref = "tika" }
++
++openpdf = { module = "com.github.librepdf:openpdf", version.ref = "openpdf" }
++mustache-compiler = { module = "com.github.spullara.mustache.java:compiler", version.ref = "mustache" }
++
++cache-api = { module = "javax.cache:cache-api", version.ref = "cache-api" }
++
++ehcache = { module = "org.ehcache:ehcache", version.ref = "ehcache" }
++
++esapi = { module = "org.owasp.esapi:esapi", version.ref = "esapi" }
++
++reflections = { module = "org.reflections:reflections", version.ref = "reflections" }
++
++activemq-client = { module = "org.apache.activemq:activemq-client", version.ref = "activemq" }
++
++mariadb-java-client = { module = "org.mariadb.jdbc:mariadb-java-client", version.ref = "mariadb" }
++postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
++mysql-connector-j = { module = "com.mysql:mysql-connector-j", version.ref = "mysql" }
++
++assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
++
++awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
++
++groovy-xml = { module = "org.apache.groovy:groovy-xml", version.ref = "groovy" }
++groovy-json = { module = "org.apache.groovy:groovy-json", version.ref = "groovy" }
++
++rest-assured = { module = "io.rest-assured:rest-assured", version.ref = "rest-assured" }
++
++mockserver-junit-jupiter = { module = "org.mock-server:mockserver-junit-jupiter", version.ref = "mock-server" }
++
++wiremock-standalone = { module = "org.wiremock:wiremock-standalone", version.ref = "wiremock" }
++
++greenmail-junit5 = { module = "com.icegreen:greenmail-junit5", version.ref = "greenmail" }
++
++image-comparison = { module = "com.github.romankh3:image-comparison", version.ref = "image-comparison" }
++
++commons-email = { module = "org.apache.commons:commons-email", version.ref = "commons-email" }
++
++jakarta-mail = { module = "com.sun.mail:jakarta.mail", version.ref = "jakarta-mail" }
++
++msk-iam-auth = { module = "software.amazon.msk:aws-msk-iam-auth", version.ref = "msk-iam-auth" }
++
++aws-s3 = { module = "software.amazon.awssdk:s3" }
++aws-auth = { module = "software.amazon.awssdk:auth" }
++
++spring-integration-event = { module = "org.springframework.integration:spring-integration-event" }
++spring-integration-jms = { module = "org.springframework.integration:spring-integration-jms" }
++spring-integration-kafka = { module = "org.springframework.integration:spring-integration-kafka" }
++
++junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api" }
++junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine" }
++
++bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
++bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
++bouncycastle-bcutil = { module = "org.bouncycastle:bcutil-jdk18on", version.ref = "bouncycastle" }
++
++cucumber-spring = { module = "io.cucumber:cucumber-spring", version.ref = "cucumber" }
++cucumber-core = { module = "io.cucumber:cucumber-core", version.ref = "cucumber" }
++cucumber-java = { module = "io.cucumber:cucumber-java", version.ref = "cucumber" }
++cucumber-java8 = { module = "io.cucumber:cucumber-java8", version.ref = "cucumber" }
++cucumber-junit-platform-engine = { module = "io.cucumber:cucumber-junit-platform-engine", version.ref = "cucumber" }
++
++[bundles]
++spring-boot-web = ["spring-boot-starter-web", "spring-boot-starter-security"]
++spring-boot-data = ["spring-boot-starter-data-jpa"]
++eclipselink-deps = ["eclipselink"]
++
++[plugins]
++spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+diff --git a/integration-tests/build.gradle b/integration-tests/build.gradle
+index 0cd3af35d..d5aafb073 100644
+--- a/integration-tests/build.gradle
++++ b/integration-tests/build.gradle
+@@ -79,7 +79,7 @@ cargo {
+             }
+             jvmArgs += ' -Dspring.profiles.active=test -Dfineract.events.external.enabled=true'
+             property 'cargo.start.jvmargs', jvmArgs
+-            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-provider/src/main/resources/keystore.jks")
++            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-war/src/main/resources/keystore.jks")
+             property 'cargo.tomcat.connector.keystorePass', 'openmf'
+             property 'cargo.tomcat.connector.keystoreType', 'JKS'
+             property 'cargo.tomcat.httpSecure', true
+@@ -169,5 +169,5 @@ tasks.named('compileTestJava') {
+ }
+ 
+ // NOTE: Gradle suggested these dependencies
+-compileTestJava.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
+-spotbugsTest.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
++compileTestJava.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
++spotbugsTest.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
+diff --git a/integration-tests/dependencies.gradle b/integration-tests/dependencies.gradle
+index 95e4b26a5..3ad9bedde 100644
+--- a/integration-tests/dependencies.gradle
++++ b/integration-tests/dependencies.gradle
+@@ -21,8 +21,7 @@ dependencies {
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+     tomcat 'org.apache.tomcat:tomcat:10.1.55@zip'
+-    def providerMainOutput = project(':fineract-provider').extensions.getByType(SourceSetContainer).named('main').get().output
+-    testImplementation( providerMainOutput,
++    testImplementation(
+             project(path: ':fineract-core', configuration: 'runtimeElements'),
+             project(path: ':fineract-accounting', configuration: 'runtimeElements'),
+             project(path: ':fineract-investor', configuration: 'runtimeElements'),
+@@ -31,7 +30,6 @@ dependencies {
+             project(path: ':fineract-tax', configuration: 'runtimeElements'),
+             project(path: ':fineract-loan', configuration: 'runtimeElements'),
+             project(path: ':fineract-savings', configuration: 'runtimeElements'),
+-            project(path: ':fineract-provider', configuration: 'runtimeElements'),
+             project(path: ':fineract-avro-schemas', configuration: 'runtimeElements'),
+             project(path: ':fineract-progressive-loan', configuration: 'runtimeElements')
+             )
+diff --git a/oauth2-tests/build.gradle b/oauth2-tests/build.gradle
+index ea2e4ae52..eb4b777ad 100644
+--- a/oauth2-tests/build.gradle
++++ b/oauth2-tests/build.gradle
+@@ -75,7 +75,7 @@ cargo {
+             }
+             jvmArgs += ' -Dspring.profiles.active=test -Dfineract.events.external.enabled=true'
+             property 'cargo.start.jvmargs', jvmArgs
+-            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-provider/src/main/resources/keystore.jks")
++            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-war/src/main/resources/keystore.jks")
+             property 'cargo.tomcat.connector.keystorePass', 'openmf'
+             property 'cargo.tomcat.connector.keystoreType', 'JKS'
+             property 'cargo.tomcat.httpSecure', true
+@@ -102,5 +102,5 @@ tasks.named('test').configure {
+ }
+ 
+ // NOTE: Gradle suggested these dependencies
+-compileTestJava.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
+-spotbugsTest.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
++compileTestJava.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
++spotbugsTest.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
+diff --git a/oauth2-tests/dependencies.gradle b/oauth2-tests/dependencies.gradle
+index b7dfa1247..afb1fd146 100644
+--- a/oauth2-tests/dependencies.gradle
++++ b/oauth2-tests/dependencies.gradle
+@@ -21,8 +21,7 @@ dependencies {
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+     tomcat 'org.apache.tomcat:tomcat:10.1.55@zip'
+-    testImplementation( files("$rootDir/fineract-provider/build/classes/java/main/"),
+-            project(path: ':fineract-provider', configuration: 'runtimeElements'),
++    testImplementation(
+             project(path: ':fineract-security', configuration: 'runtimeElements'),
+             'org.junit.jupiter:junit-jupiter-api',
+             'org.bouncycastle:bcpkix-jdk18on',
+diff --git a/settings.gradle b/settings.gradle
+index cc45f2797..ccf93f7aa 100644
+--- a/settings.gradle
++++ b/settings.gradle
+@@ -58,7 +58,6 @@ include ':fineract-command-audit'
+ include ':fineract-command-async'
+ include ':fineract-command-disruptor'
+ include ':fineract-accounting'
+-include ':fineract-provider'
+ include ':fineract-branch'
+ include ':fineract-document'
+ include ':fineract-investor'
+diff --git a/twofactor-tests/build.gradle b/twofactor-tests/build.gradle
+index b25e61443..494a4c61a 100644
+--- a/twofactor-tests/build.gradle
++++ b/twofactor-tests/build.gradle
+@@ -72,7 +72,7 @@ cargo {
+             }
+             jvmArgs += ' -Dspring.profiles.active=test -Dfineract.events.external.enabled=true'
+             property 'cargo.start.jvmargs', jvmArgs
+-            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-provider/src/main/resources/keystore.jks")
++            property 'cargo.tomcat.connector.keystoreFile', file("$rootDir/fineract-war/src/main/resources/keystore.jks")
+             property 'cargo.tomcat.connector.keystorePass', 'openmf'
+             property 'cargo.tomcat.connector.keystoreType', 'JKS'
+             property 'cargo.tomcat.httpSecure', true
+@@ -99,5 +99,5 @@ tasks.named('test').configure {
+ }
+ 
+ // NOTE: Gradle suggested these dependencies
+-compileTestJava.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
+-spotbugsTest.dependsOn(':fineract-provider:generateGitProperties', ':fineract-provider:processResources', ':fineract-provider:resolve')
++compileTestJava.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
++spotbugsTest.dependsOn(':fineract-war:generateGitProperties', ':fineract-war:processResources', ':fineract-war:resolve')
+diff --git a/twofactor-tests/dependencies.gradle b/twofactor-tests/dependencies.gradle
+index a91d03851..f27997d95 100644
+--- a/twofactor-tests/dependencies.gradle
++++ b/twofactor-tests/dependencies.gradle
+@@ -21,8 +21,7 @@ dependencies {
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+     tomcat 'org.apache.tomcat:tomcat:10.1.55@zip'
+-    testImplementation( files("$rootDir/fineract-provider/build/classes/java/main/"),
+-            project(path: ':fineract-provider', configuration: 'runtimeElements'),
++    testImplementation(
+             'org.junit.jupiter:junit-jupiter-api',
+             'com.icegreen:greenmail-junit5',
+             'org.bouncycastle:bcpkix-jdk18on',

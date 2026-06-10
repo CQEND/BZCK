@@ -1,0 +1,85 @@
+diff --git a/docs/blueprints/drf_rw_serializers.py b/docs/blueprints/drf_rw_serializers.py
+index cd7bcef..37c6f0f 100644
+--- a/docs/blueprints/drf_rw_serializers.py
++++ b/docs/blueprints/drf_rw_serializers.py
+@@ -6,12 +6,9 @@ from drf_spectacular.openapi import AutoSchema
+ class CustomAutoSchema(AutoSchema):
+     """ Utilize custom drf_rw_serializers methods for directional serializers """
+ 
+-    def get_request_serializer(self):
+-        if isinstance(self.view, RWGenericAPIView):
+-            return self.view.get_write_serializer()
+-        return self._get_serializer()
+-
+-    def get_response_serializers(self):
++    def _get_serializer_by_direction(self, direction, **kwargs):
+         if isinstance(self.view, RWGenericAPIView):
++            if direction == 'request':
++                return self.view.get_write_serializer()
+             return self.view.get_read_serializer()
+-        return self._get_serializer()
++        return super()._get_serializer_by_direction(direction, **kwargs)
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..75108df 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -369,13 +369,33 @@ class AutoSchema(ViewInspector):
+             auths.append({})
+         return auths
+ 
++    def _get_serializer_by_direction(self, direction: Direction, **kwargs: Any) -> Optional[_SerializerType]:
++        """
++        Internal helper that resolves the serializer for a given direction.
++
++        Centralizes the common logic shared between request and response serializer
++        resolution (e.g. view attribute introspection, ``@extend_schema`` override
++        handling, multi-serializer mapping).  Subclasses that need direction-aware
++        behaviour should override this method rather than overriding
++        :meth:`get_request_serializer` and :meth:`get_response_serializers`
++        separately.
++
++        :param direction: ``'request'`` or ``'response'`` – indicates whether the
++            serializer will be used for the request body or the response body.
++        :param kwargs: reserved for future use by subclasses.
++        :returns: a serializer class/instance, ``None``, or any of the types
++            accepted by ``@extend_schema(request=…)`` /
++            ``@extend_schema(responses=…)``.
++        """
++        return self._get_serializer()
++
+     def get_request_serializer(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_serializer_by_direction('request')
+ 
+     def get_response_serializers(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_serializer_by_direction('response')
+ 
+     def get_tags(self) -> List[str]:
+         """ override this for custom behaviour """
+diff --git a/drf_spectacular/utils.py b/drf_spectacular/utils.py
+index 921daec..3a5c813 100644
+--- a/drf_spectacular/utils.py
++++ b/drf_spectacular/utils.py
+@@ -475,15 +475,12 @@ def extend_schema(
+                     return super().get_examples() + examples
+                 return super().get_examples()
+ 
+-            def get_request_serializer(self):
+-                if request is not empty and is_in_scope(self):
++            def _get_serializer_by_direction(self, direction, **kwargs):
++                if direction == 'request' and request is not empty and is_in_scope(self):
+                     return request
+-                return super().get_request_serializer()
+-
+-            def get_response_serializers(self):
+-                if responses is not empty and is_in_scope(self):
++                if direction == 'response' and responses is not empty and is_in_scope(self):
+                     return responses
+-                return super().get_response_serializers()
++                return super()._get_serializer_by_direction(direction, **kwargs)
+ 
+             def get_description(self):
+                 if description and is_in_scope(self):

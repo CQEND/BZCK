@@ -1,0 +1,153 @@
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..63a1825 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -399,6 +399,10 @@ def build_parameter_type(
+         schema['explode'] = explode
+     if style is not None:
+         schema['style'] = style
++    
++    if schema['schema'].get('type') == 'array' and explode is True:
++        schema.setdefault('style', 'form')
++
+     if enum:
+         # in case of array schema, enum makes little sense on the array itself
+         if schema['schema'].get('type') == 'array':
+@@ -415,6 +419,8 @@ def build_parameter_type(
+         schema['schema']['default'] = default
+     if not allow_blank and schema['schema'].get('type') == 'string':
+         schema['schema']['minLength'] = schema['schema'].get('minLength', 1)
++    elif allow_blank and location == 'query':
++        schema['allowEmptyValue'] = True
+     if examples:
+         schema['examples'] = examples
+     if extensions:
+diff --git a/tests/test_plumbing.py b/tests/test_plumbing.py
+index 2516969..05192b6 100644
+--- a/tests/test_plumbing.py
++++ b/tests/test_plumbing.py
+@@ -23,7 +23,7 @@ from drf_spectacular.openapi import AutoSchema
+ from drf_spectacular.plumbing import (
+     analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
+     follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
+-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
++    is_serializer, resolve_type_hint, safe_ref, set_query_parameters, build_parameter_type
+ )
+ from drf_spectacular.validation import validate_schema
+ from tests import generate_schema
+@@ -517,3 +517,115 @@ def test_get_doc_with_method_docstring(disable):
+             assert doc == ""
+         else:
+             assert doc == "a docstring"
++
++
++def test_build_parameter_type_style_deepObject():
++    # 1. parameter_style 为 deepObject 时的处理
++    param1 = build_parameter_type(
++        name='param1',
++        schema={'type': 'object'},
++        location='query',
++        style='deepObject'
++    )
++    assert param1['style'] == 'deepObject'
++
++def test_build_parameter_type_explode():
++    # 2. explode 为 True/False 的不同组合
++    param2 = build_parameter_type(
++        name='param2',
++        schema={'type': 'string'},
++        location='query',
++        explode=False
++    )
++    assert param2['explode'] is False
++
++    param3 = build_parameter_type(
++        name='param3',
++        schema={'type': 'string'},
++        location='query',
++        explode=True
++    )
++    assert param3['explode'] is True
++
++def test_build_parameter_type_allow_empty_value():
++    # 3. allowEmptyValue 字段的添加条件
++    param4 = build_parameter_type(
++        name='param4',
++        schema={'type': 'string'},
++        location='query',
++        allow_blank=True
++    )
++    assert param4.get('allowEmptyValue') is True
++
++    param5 = build_parameter_type(
++        name='param5',
++        schema={'type': 'string'},
++        location='path',
++        allow_blank=True
++    )
++    assert 'allowEmptyValue' not in param5
++
++def test_build_parameter_type_array_explode():
++    # 4. 当 schema 类型为 array 且 explode 为 True 时的特殊逻辑
++    param6 = build_parameter_type(
++        name='param6',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location='query',
++        explode=True
++    )
++    assert param6['style'] == 'form'
++    assert param6['explode'] is True
++
++def test_build_parameter_type_enum_pattern():
++    # Other coverage: enum array vs non-array, pattern array vs non-array
++    param7 = build_parameter_type(
++        name='param7',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location='query',
++        enum=['b', 'a'],
++        pattern='^foo$'
++    )
++    assert param7['schema']['items']['enum'] == ['a', 'b']
++    assert param7['schema']['items']['pattern'] == '^foo$'
++
++    param8 = build_parameter_type(
++        name='param8',
++        schema={'type': 'string'},
++        location='query',
++        enum=['b', 'a'],
++        pattern='^foo$'
++    )
++    assert param8['schema']['enum'] == ['a', 'b']
++    assert param8['schema']['pattern'] == '^foo$'
++
++def test_build_parameter_type_path_required():
++    # required / path
++    param9 = build_parameter_type(
++        name='param9',
++        schema={'type': 'string'},
++        location='path',
++        deprecated=True,
++        default='foo',
++        description='desc'
++    )
++    assert param9['required'] is True
++    assert param9['deprecated'] is True
++    assert 'default' not in param9['schema']  # path params can't have default
++    assert param9['description'] == 'desc'
++
++def test_build_parameter_type_extensions_and_examples():
++    param10 = build_parameter_type(
++        name='param10',
++        schema={'type': 'string', 'readOnly': True},
++        location='query',
++        examples=[{'value': 'ex'}],
++        extensions={'x-foo': 'bar'},
++        allow_blank=False,
++        default='foo'
++    )
++    assert 'readOnly' not in param10['schema']
++    assert param10['examples'] == [{'value': 'ex'}]
++    assert param10['x-foo'] == 'bar'
++    assert param10['schema']['minLength'] == 1
++    assert param10['schema']['default'] == 'foo'
++

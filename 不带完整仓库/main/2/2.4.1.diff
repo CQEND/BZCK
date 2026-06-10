@@ -1,0 +1,100 @@
+diff --git a/docs/settings.rst b/docs/settings.rst
+index 863156b..a3d861e 100644
+--- a/docs/settings.rst
++++ b/docs/settings.rst
+@@ -60,3 +60,26 @@ in your project files.
+         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
+         ...
+     }
++
++Example: Redoc settings
++-----------------------
++
++We currently support passing through all basic Redoc `configuration parameters <https://redocly.com/docs/redoc/config/>`_.
++If you need to customize the surrounding HTML, you can point the Redoc view at your own template.
++This is useful for adding custom branding, changing the page title, or inserting additional JavaScript.
++
++.. code:: python
++
++    SPECTACULAR_SETTINGS = {
++        ...
++        # available Redoc configuration parameters
++        # https://redocly.com/docs/redoc/config/
++        "REDOC_UI_SETTINGS": {
++            "hideDownloadButton": True,
++            "nativeScrollbars": True,
++            ...
++        },
++        # override the HTML template used by SpectacularRedocView
++        "REDOC_TEMPLATE_NAME": "your_app/custom_redoc.html", # defaults to drf_spectacular/redoc.html
++        ...
++    }
+diff --git a/drf_spectacular/settings.py b/drf_spectacular/settings.py
+index 6650a77..155aaf8 100644
+--- a/drf_spectacular/settings.py
++++ b/drf_spectacular/settings.py
+@@ -76,6 +76,7 @@ SPECTACULAR_DEFAULTS: Dict[str, Any] = {
+     # The settings are serialized with json.dumps(). If you need customized JS, use a
+     # string instead. The string must then contain valid JS and is passed unchanged.
+     'REDOC_UI_SETTINGS': {},
++    'REDOC_TEMPLATE_NAME': 'drf_spectacular/redoc.html',
+ 
+     # CDNs for swagger and redoc. You can change the version or even host your
+     # own depending on your requirements. For self-hosting, have a look at
+diff --git a/drf_spectacular/views.py b/drf_spectacular/views.py
+index c81a4b3..4f989cc 100644
+--- a/drf_spectacular/views.py
++++ b/drf_spectacular/views.py
+@@ -241,6 +241,11 @@ class SpectacularRedocView(APIView):
+     template_name: str = 'drf_spectacular/redoc.html'
+     title: Optional[str] = spectacular_settings.TITLE
+ 
++    def get_template_names(self):
++        if self.template_name != SpectacularRedocView.template_name:
++            return [self.template_name]
++        return [spectacular_settings.REDOC_TEMPLATE_NAME]
++
+     @extend_schema(exclude=True)
+     def get(self, request, *args, **kwargs):
+         return Response(
+@@ -250,7 +255,7 @@ class SpectacularRedocView(APIView):
+                 'schema_url': self._get_schema_url(request),
+                 'settings': self._dump(spectacular_settings.REDOC_UI_SETTINGS),
+             },
+-            template_name=self.template_name
++            template_name=self.get_template_names()[0]
+         )
+ 
+     def _dump(self, data):
+diff --git a/tests/test_view.py b/tests/test_view.py
+index 414e849..aec9516 100644
+--- a/tests/test_view.py
++++ b/tests/test_view.py
+@@ -4,10 +4,11 @@ import pytest
+ import yaml
+ from django import __version__ as DJANGO_VERSION
+ from django.http import HttpResponseRedirect
++from django.test import override_settings
+ from django.urls import path
+ from rest_framework.decorators import api_view
+ from rest_framework.response import Response
+-from rest_framework.test import APIClient
++from rest_framework.test import APIClient, APIRequestFactory
+ 
+ from drf_spectacular.types import OpenApiTypes
+ from drf_spectacular.utils import extend_schema
+@@ -126,6 +127,14 @@ def test_spectacular_ui_view(no_warnings, ui):
+     assert b'"/api/v2/schema/"' in response.content
+ 
+ 
++@override_settings(SPECTACULAR_SETTINGS={'REDOC_TEMPLATE_NAME': 'custom_redoc.html'})
++@pytest.mark.urls(__name__)
++def test_spectacular_redoc_view_custom_template_name(no_warnings):
++    response = SpectacularRedocView.as_view()(APIRequestFactory().get('/api/v2/schema/redoc/'))
++    assert response.status_code == 200
++    assert response.template_name == 'custom_redoc.html'
++
++
+ @pytest.mark.urls(__name__)
+ def test_spectacular_swagger_ui_alternate(no_warnings):
+     # first request for the html

@@ -1,0 +1,30 @@
+diff --git a/config/checkstyle/checkstyle.xml b/config/checkstyle/checkstyle.xml
+index ca876834d..14c71c1b4 100644
+--- a/config/checkstyle/checkstyle.xml
++++ b/config/checkstyle/checkstyle.xml
+@@ -213,6 +213,12 @@
+         </module>
+         <module name="AvoidNoArgumentSuperConstructorCall"/>
+         <module name="AvoidDoubleBraceInitialization"/>
++        <module name="JavadocMethod">
++            <property name="accessModifiers"
++             value="public, protected"/>
++            <property name="validateThrows"
++             value="true"/>
++        </module>
+ <!-- TODO Enable many more checks (go about this one by one, step by step, raise separate PRs fixing and then enforcing):
+ 
+         <module name="HiddenField">
+diff --git a/config/checkstyle/suppressions.xml b/config/checkstyle/suppressions.xml
+index c0523c391..f76df2e2a 100644
+--- a/config/checkstyle/suppressions.xml
++++ b/config/checkstyle/suppressions.xml
+@@ -40,4 +40,8 @@
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="ClassTypeParameterName"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]src[/\\]main[/\\]java[/\\]" checks="HideUtilityClassConstructor"/>
+     <suppress files="[/\\]fineract-command-disruptor[/\\]build[/\\]generated[/\\]" checks=".*"/>
++    <suppress files="[/\\]src[/\\]test[/\\]java[/\\]" checks="Javadoc.*"/>
++    <suppress files="[/\\]fineract-client[/\\]org[/\\]apache[/\\]fineract[/\\]client[/\\]" checks=".*"/>
++    <suppress files="ApiResourceSwagger\.java" checks="JavadocMethod|JavadocVariable"/>
++    <suppress files="COBBusinessStepServiceImpl\.java" checks="JavaNCSS|MethodLength"/>
+ </suppressions>

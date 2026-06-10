@@ -1,0 +1,3294 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccountingBridgeLoanTransactionDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccountingBridgeLoanTransactionDTO.java
+index bc3d62561..1df0dc8b4 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccountingBridgeLoanTransactionDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccountingBridgeLoanTransactionDTO.java
+@@ -22,35 +22,40 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.ArrayList;
+ import java.util.List;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+-import lombok.NoArgsConstructor;
+ 
+-@Data
+-@NoArgsConstructor
+-@AllArgsConstructor
+-public class AccountingBridgeLoanTransactionDTO {
++public record AccountingBridgeLoanTransactionDTO(
++        Long id,
++        Long officeId,
++        LoanTransactionEnumData type,
++        boolean reversed,
++        LocalDate date,
++        String currencyCode,
++        BigDecimal amount,
++        BigDecimal netDisbursalAmount,
++        BigDecimal principalPortion,
++        BigDecimal interestPortion,
++        BigDecimal feeChargesPortion,
++        BigDecimal penaltyChargesPortion,
++        BigDecimal overPaymentPortion,
++        String chargeRefundChargeType,
++        Long paymentTypeId,
++        List<LoanChargePaidByDTO> loanChargesPaid,
++        BigDecimal principalPaid,
++        BigDecimal feePaid,
++        BigDecimal penaltyPaid,
++        LoanChargeData loanChargeData,
++        boolean loanToLoanTransfer
++) {
+ 
+-    private Long id;
+-    private Long officeId;
+-    private LoanTransactionEnumData type;
+-    private boolean reversed;
+-    private LocalDate date;
+-    private String currencyCode;
+-    private BigDecimal amount;
+-    private BigDecimal netDisbursalAmount;
+-    private BigDecimal principalPortion;
+-    private BigDecimal interestPortion;
+-    private BigDecimal feeChargesPortion;
+-    private BigDecimal penaltyChargesPortion;
+-    private BigDecimal overPaymentPortion;
+-    private String chargeRefundChargeType;
+-    private Long paymentTypeId;
+-    private List<LoanChargePaidByDTO> loanChargesPaid = new ArrayList<>();
+-    private BigDecimal principalPaid;
+-    private BigDecimal feePaid;
+-    private BigDecimal penaltyPaid;
+-    private LoanChargeData loanChargeData;
+-    private boolean loanToLoanTransfer;
++    public AccountingBridgeLoanTransactionDTO() {
++        this(null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, new ArrayList<>(), null, null,
++                null, null, false);
++    }
+ 
++    public List<LoanChargePaidByDTO> loanChargesPaid() {
++        if (loanChargesPaid == null) {
++            return new ArrayList<>();
++        }
++        return loanChargesPaid;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccrualChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccrualChargeData.java
+index 447131c05..cfd087c89 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccrualChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AccrualChargeData.java
+@@ -18,21 +18,35 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+-import lombok.Data;
+-import lombok.RequiredArgsConstructor;
+-import lombok.experimental.Accessors;
+ import org.apache.fineract.organisation.monetary.domain.Money;
+ 
+-@Data
+-@Accessors(chain = true)
+-@RequiredArgsConstructor
+-public class AccrualChargeData {
++public record AccrualChargeData(
++        Long loanChargeId,
++        Long loanInstallmentChargeId,
++        boolean isPenalty,
++        Money chargeAmount,
++        Money chargeAccruable,
++        Money chargeAccrued,
++        Money transactionAccrued
++) {
+ 
+-    private final Long loanChargeId;
+-    private final Long loanInstallmentChargeId;
+-    private final boolean isPenalty;
+-    private Money chargeAmount;
+-    private Money chargeAccruable;
+-    private Money chargeAccrued;
+-    private Money transactionAccrued;
++    public AccrualChargeData setChargeAmount(Money chargeAmount) {
++        return new AccrualChargeData(loanChargeId, loanInstallmentChargeId, isPenalty, chargeAmount, chargeAccruable, chargeAccrued,
++                transactionAccrued);
++    }
++
++    public AccrualChargeData setChargeAccruable(Money chargeAccruable) {
++        return new AccrualChargeData(loanChargeId, loanInstallmentChargeId, isPenalty, chargeAmount, chargeAccruable, chargeAccrued,
++                transactionAccrued);
++    }
++
++    public AccrualChargeData setChargeAccrued(Money chargeAccrued) {
++        return new AccrualChargeData(loanChargeId, loanInstallmentChargeId, isPenalty, chargeAmount, chargeAccruable, chargeAccrued,
++                transactionAccrued);
++    }
++
++    public AccrualChargeData setTransactionAccrued(Money transactionAccrued) {
++        return new AccrualChargeData(loanChargeId, loanInstallmentChargeId, isPenalty, chargeAmount, chargeAccruable, chargeAccrued,
++                transactionAccrued);
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
+index ec9d2c259..2caad249e 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
+@@ -20,23 +20,16 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ 
+-/**
+- * DTO for base transaction information for AmortizationAllocationMapping
+- */
+-@Getter
+-@AllArgsConstructor
+-public class AmortizationAllocationBaseTransactionDTO {
+-
+-    private Long loanId;
+-    private ExternalId loanExternalId;
+-    private Long baseLoanTransactionId;
+-    private LocalDate baseLoanTransactionDate;
+-    private BigDecimal baseLoanTransactionAmount;
+-    private BigDecimal unrecognizedAmount;
+-    private BigDecimal chargedOffAmount;
+-    private BigDecimal adjustmentAmount;
++public record AmortizationAllocationBaseTransactionDTO(
++        Long loanId,
++        ExternalId loanExternalId,
++        Long baseLoanTransactionId,
++        LocalDate baseLoanTransactionDate,
++        BigDecimal baseLoanTransactionAmount,
++        BigDecimal unrecognizedAmount,
++        BigDecimal chargedOffAmount,
++        BigDecimal adjustmentAmount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
+index df7809f6e..5961e28a6 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
+@@ -20,21 +20,14 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ import org.apache.fineract.portfolio.loanaccount.domain.AmortizationType;
+ 
+-/**
+- * DTO for amortization allocation mapping data
+- */
+-@Getter
+-@AllArgsConstructor
+-public class AmortizationAllocationMappingDTO {
+-
+-    private Long amortizationLoanTransactionId;
+-    private ExternalId amortizationLoanTransactionExternalId;
+-    private LocalDate amortizationDate;
+-    private AmortizationType amortizationType;
+-    private BigDecimal amount;
++public record AmortizationAllocationMappingDTO(
++        Long amortizationLoanTransactionId,
++        ExternalId amortizationLoanTransactionExternalId,
++        LocalDate amortizationDate,
++        AmortizationType amortizationType,
++        BigDecimal amount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
+index 4a5dfb67d..6b9ba838e 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
+@@ -19,22 +19,9 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+-import lombok.NoArgsConstructor;
+ 
+-/**
+- * Carries the pro-rated tax amount for a single TaxComponent when a LoanCharge is (partially) paid. Used to propagate
+- * tax details from the domain layer to the accounting bridge.
+- */
+-@Data
+-@NoArgsConstructor
+-@AllArgsConstructor
+-public class ChargeTaxDetailDTO {
+-
+-    /** GL account to credit (tax liability account from TaxComponent.creditAccount). */
+-    private Long creditAccountId;
+-
+-    /** Pro-rated tax amount for this component in this payment. */
+-    private BigDecimal amount;
++public record ChargeTaxDetailDTO(
++        Long creditAccountId,
++        BigDecimal amount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/CollectionData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/CollectionData.java
+index 8317db7b0..0df86faf1 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/CollectionData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/CollectionData.java
+@@ -18,43 +18,36 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
++import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.Collection;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public final class CollectionData {
+-
+-    private BigDecimal availableDisbursementAmount;
+-    private BigDecimal availableDisbursementAmountWithOverApplied;
+-    private Long pastDueDays;
+-    private LocalDate pastDueDate;
+-    private LocalDate nextPaymentDueDate;
+-    private BigDecimal nextPaymentAmount;
+-    private Long delinquentDays;
+-    private LocalDate delinquentDate;
+-    private BigDecimal delinquentAmount;
+-    private LocalDate lastPaymentDate;
+-    private BigDecimal lastPaymentAmount;
+-
+-    private LocalDate lastRepaymentDate;
+-    private BigDecimal lastRepaymentAmount;
+-
+-    public Collection<DelinquencyPausePeriod> delinquencyPausePeriods;
+-    public Collection<InstallmentLevelDelinquency> installmentLevelDelinquency;
+-
+-    private BigDecimal delinquentPrincipal;
+-    private BigDecimal delinquentInterest;
+-    private BigDecimal delinquentFee;
+-    private BigDecimal delinquentPenalty;
++public record CollectionData(
++        BigDecimal availableDisbursementAmount,
++        BigDecimal availableDisbursementAmountWithOverApplied,
++        Long pastDueDays,
++        LocalDate pastDueDate,
++        LocalDate nextPaymentDueDate,
++        BigDecimal nextPaymentAmount,
++        Long delinquentDays,
++        LocalDate delinquentDate,
++        BigDecimal delinquentAmount,
++        LocalDate lastPaymentDate,
++        BigDecimal lastPaymentAmount,
++        LocalDate lastRepaymentDate,
++        BigDecimal lastRepaymentAmount,
++        Collection<DelinquencyPausePeriod> delinquencyPausePeriods,
++        Collection<InstallmentLevelDelinquency> installmentLevelDelinquency,
++        BigDecimal delinquentPrincipal,
++        BigDecimal delinquentInterest,
++        BigDecimal delinquentFee,
++        BigDecimal delinquentPenalty
++) implements Serializable {
+ 
+     public static CollectionData template() {
+         final BigDecimal zero = BigDecimal.ZERO;
+         return new CollectionData(zero, zero, 0L, null, null, zero, 0L, null, zero, null, zero, null, zero, null, null, zero, zero, zero,
+                 zero);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
+index 0aef796b7..a9918bade 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
+@@ -19,18 +19,10 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.EqualsAndHashCode;
+-import lombok.Getter;
+-import lombok.ToString;
+ 
+-@AllArgsConstructor
+-@ToString
+-@Getter
+-@EqualsAndHashCode
+-public class DelinquencyPausePeriod {
+-
+-    private boolean active;
+-    private LocalDate pausePeriodStart;
+-    private LocalDate pausePeriodEnd;
++public record DelinquencyPausePeriod(
++        boolean active,
++        LocalDate pausePeriodStart,
++        LocalDate pausePeriodEnd
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
+index 9a9e31c40..ea7d3322f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
+@@ -22,52 +22,12 @@ import java.math.BigDecimal;
+ import java.util.List;
+ import org.apache.fineract.portfolio.accountdetails.data.LoanAccountSummaryData;
+ 
+-public class GLIMContainer {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final String accountNumber;
+-
+-    private final List<LoanAccountSummaryData> childGLIMAccounts;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final String loanStatus;
+-
+-    public GLIMContainer(final BigDecimal glimId, final BigDecimal groupId, final String accountNumber,
+-            final List<LoanAccountSummaryData> childGLIMAccounts, final BigDecimal parentPrincipalAmount, final String loanStatus) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.accountNumber = accountNumber;
+-        this.childGLIMAccounts = childGLIMAccounts;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.loanStatus = loanStatus;
+-
+-    }
+-
+-    public BigDecimal getGlimId() {
+-        return glimId;
+-    }
+-
+-    public BigDecimal getGroupId() {
+-        return groupId;
+-    }
+-
+-    public String getAccountNumber() {
+-        return accountNumber;
+-    }
+-
+-    public List<LoanAccountSummaryData> getChildGLIMAccounts() {
+-        return childGLIMAccounts;
+-    }
+-
+-    public BigDecimal getParentPrincipalAmount() {
+-        return parentPrincipalAmount;
+-    }
+-
+-    public String getLoanStatus() {
+-        return loanStatus;
+-    }
++public record GLIMContainer(
++        BigDecimal glimId,
++        BigDecimal groupId,
++        String accountNumber,
++        List<LoanAccountSummaryData> childGLIMAccounts,
++        BigDecimal parentPrincipalAmount,
++        String loanStatus
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
+index 7ff7cec23..a232163a6 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
+@@ -16,86 +16,26 @@
+  * specific language governing permissions and limitations
+  * under the License.
+  */
+-
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ 
+-public final class GlimRepaymentTemplate {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final BigDecimal clientId;
+-
+-    private final String clientName;
+-
+-    private final BigDecimal childLoanId;
+-
+-    private final String parentAccountNo;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final String childLoanAccountNo;
+-
+-    private final BigDecimal childPrincipalAmount;
+-
+-    private GlimRepaymentTemplate(final BigDecimal glimId, final BigDecimal groupId, final BigDecimal clientId, final String clientName,
+-            final BigDecimal childLoanId, final String parentAccountNo, final BigDecimal parentPrincipalAmount,
+-            final String childLoanAccountNo, final BigDecimal childPrincipalAmount) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.clientId = clientId;
+-        this.clientName = clientName;
+-        this.childLoanId = childLoanId;
+-        this.parentAccountNo = parentAccountNo;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.childLoanAccountNo = childLoanAccountNo;
+-        this.childPrincipalAmount = childPrincipalAmount;
+-    }
+-
+-    public static GlimRepaymentTemplate getInstance(final BigDecimal glimId, final BigDecimal groupId, final BigDecimal clientId,
+-            final String clientName, final BigDecimal childLoanId, final String parentAccountNo, final BigDecimal parentPrincipalAmount,
+-            final String childLoanAccountNo, final BigDecimal childPrincipalAmount) {
++public record GlimRepaymentTemplate(
++        BigDecimal glimId,
++        BigDecimal groupId,
++        BigDecimal clientId,
++        String clientName,
++        BigDecimal childLoanId,
++        String parentAccountNo,
++        BigDecimal parentPrincipalAmount,
++        String childLoanAccountNo,
++        BigDecimal childPrincipalAmount
++) {
++
++    public static GlimRepaymentTemplate getInstance(BigDecimal glimId, BigDecimal groupId, BigDecimal clientId, String clientName,
++            BigDecimal childLoanId, String parentAccountNo, BigDecimal parentPrincipalAmount, String childLoanAccountNo,
++            BigDecimal childPrincipalAmount) {
+         return new GlimRepaymentTemplate(glimId, groupId, clientId, clientName, childLoanId, parentAccountNo, parentPrincipalAmount,
+                 childLoanAccountNo, childPrincipalAmount);
+     }
+-
+-    public BigDecimal getGlimId() {
+-        return glimId;
+-    }
+-
+-    public BigDecimal getGroupId() {
+-        return groupId;
+-    }
+-
+-    public BigDecimal getClientId() {
+-        return clientId;
+-    }
+-
+-    public String getClientName() {
+-        return clientName;
+-    }
+-
+-    public BigDecimal getChildLoanId() {
+-        return childLoanId;
+-    }
+-
+-    public String getParentAccountNo() {
+-        return parentAccountNo;
+-    }
+-
+-    public BigDecimal getParentPrincipalAmount() {
+-        return parentPrincipalAmount;
+-    }
+-
+-    public String getChildLoanAccountNo() {
+-        return childLoanAccountNo;
+-    }
+-
+-    public BigDecimal getChildPrincipalAmount() {
+-        return childPrincipalAmount;
+-    }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
+index 023100915..a57013430 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
+@@ -16,84 +16,31 @@
+  * specific language governing permissions and limitations
+  * under the License.
+  */
+-
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ 
+-public final class GroupLoanIndividualMonitoringAccountData {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final String accountNumber;
+-
+-    private final String childAccountNumber;
+-
+-    private final BigDecimal childPrincipalAmount;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final Long childAccountsCount;
+-
+-    private final String loanStatus;
+-
+-    private GroupLoanIndividualMonitoringAccountData(final BigDecimal glimId, final BigDecimal groupId, final String accountNumber,
+-            final String childAccountNumber, final BigDecimal childPrincipalAmount, final BigDecimal parentPrincipalAmount,
+-            final Long childAccountsCount, final String loanStatus) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.accountNumber = accountNumber;
+-        this.childAccountNumber = childAccountNumber;
+-        this.childPrincipalAmount = childPrincipalAmount;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.childAccountsCount = childAccountsCount;
+-        this.loanStatus = loanStatus;
+-    }
+-
+-    public static GroupLoanIndividualMonitoringAccountData getInstance(final BigDecimal glimId, final BigDecimal groupId,
+-            final String accountNumber, final String childAccountNumber, final BigDecimal childPrincipalAmount,
+-            final BigDecimal parentPrincipalAmount, final Long childAccountsCount, final String loanStatus) {
++public record GroupLoanIndividualMonitoringAccountData(
++        BigDecimal glimId,
++        BigDecimal groupId,
++        String accountNumber,
++        String childAccountNumber,
++        BigDecimal childPrincipalAmount,
++        BigDecimal parentPrincipalAmount,
++        Long childAccountsCount,
++        String loanStatus
++) {
++
++    public static GroupLoanIndividualMonitoringAccountData getInstance(BigDecimal glimId, BigDecimal groupId, String accountNumber,
++            String childAccountNumber, BigDecimal childPrincipalAmount, BigDecimal parentPrincipalAmount, Long childAccountsCount,
++            String loanStatus) {
+         return new GroupLoanIndividualMonitoringAccountData(glimId, groupId, accountNumber, childAccountNumber, childPrincipalAmount,
+                 parentPrincipalAmount, childAccountsCount, loanStatus);
+     }
+ 
+-    public static GroupLoanIndividualMonitoringAccountData getInstance1(final BigDecimal glimId, final BigDecimal groupId,
+-            final String accountNumber, final BigDecimal parentPrincipalAmount, final String loanStatus) {
++    public static GroupLoanIndividualMonitoringAccountData getInstance1(BigDecimal glimId, BigDecimal groupId, String accountNumber,
++            BigDecimal parentPrincipalAmount, String loanStatus) {
+         return new GroupLoanIndividualMonitoringAccountData(glimId, groupId, accountNumber, null, null, parentPrincipalAmount, null,
+                 loanStatus);
+     }
+-
+-    public BigDecimal getGlimId() {
+-        return glimId;
+-    }
+-
+-    public BigDecimal getGroupId() {
+-        return groupId;
+-    }
+-
+-    public String getAccountNumber() {
+-        return accountNumber;
+-    }
+-
+-    public String getChildAccountNumber() {
+-        return childAccountNumber;
+-    }
+-
+-    public BigDecimal getChildPrincipalAmount() {
+-        return childPrincipalAmount;
+-    }
+-
+-    public BigDecimal getParentPrincipalAmount() {
+-        return parentPrincipalAmount;
+-    }
+-
+-    public Long getChildAccountsCount() {
+-        return childAccountsCount;
+-    }
+-
+-    public String getLoanStatus() {
+-        return loanStatus;
+-    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/InstallmentLevelDelinquency.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/InstallmentLevelDelinquency.java
+index bbd6b806d..184a53a72 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/InstallmentLevelDelinquency.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/InstallmentLevelDelinquency.java
+@@ -19,26 +19,22 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Data;
+ import org.apache.fineract.portfolio.delinquency.data.LoanInstallmentDelinquencyTagData;
+ 
+-@Data
+-public class InstallmentLevelDelinquency {
+-
+-    private Long rangeId;
+-    private String classification;
+-    private Integer minimumAgeDays;
+-    private Integer maximumAgeDays;
+-    private BigDecimal delinquentAmount;
++public record InstallmentLevelDelinquency(
++        Long rangeId,
++        String classification,
++        Integer minimumAgeDays,
++        Integer maximumAgeDays,
++        BigDecimal delinquentAmount
++) {
+ 
+     public static InstallmentLevelDelinquency from(LoanInstallmentDelinquencyTagData loanInstallmentDelinquencyTagData) {
+-        InstallmentLevelDelinquency installmentLevelDelinquency = new InstallmentLevelDelinquency();
+-        installmentLevelDelinquency.setClassification(loanInstallmentDelinquencyTagData.getDelinquencyRange().getClassification());
+-        installmentLevelDelinquency.setRangeId(loanInstallmentDelinquencyTagData.getDelinquencyRange().getId());
+-        installmentLevelDelinquency.setMinimumAgeDays(loanInstallmentDelinquencyTagData.getDelinquencyRange().getMinimumAgeDays());
+-        installmentLevelDelinquency.setMaximumAgeDays(loanInstallmentDelinquencyTagData.getDelinquencyRange().getMaximumAgeDays());
+-        installmentLevelDelinquency.setDelinquentAmount(loanInstallmentDelinquencyTagData.getOutstandingAmount());
+-        return installmentLevelDelinquency;
++        return new InstallmentLevelDelinquency(
++                loanInstallmentDelinquencyTagData.getDelinquencyRange().getId(),
++                loanInstallmentDelinquencyTagData.getDelinquencyRange().getClassification(),
++                loanInstallmentDelinquencyTagData.getDelinquencyRange().getMinimumAgeDays(),
++                loanInstallmentDelinquencyTagData.getDelinquencyRange().getMaximumAgeDays(),
++                loanInstallmentDelinquencyTagData.getOutstandingAmount());
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanAmortizationAllocationData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanAmortizationAllocationData.java
+index 56400783c..2e82c97b5 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanAmortizationAllocationData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanAmortizationAllocationData.java
+@@ -18,45 +18,144 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
++import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+-import lombok.AllArgsConstructor;
+-import lombok.Builder;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ import org.apache.fineract.portfolio.loanaccount.domain.AmortizationType;
+ 
+ /**
+  * Data transfer object for loan amortization allocation information
+  */
+-@Getter
+-@Builder
+-@AllArgsConstructor
+-public class LoanAmortizationAllocationData {
+-
+-    private Long loanId;
+-    private ExternalId loanExternalId;
+-    private Long baseLoanTransactionId;
+-    private LocalDate baseLoanTransactionDate;
+-    private BigDecimal baseLoanTransactionAmount;
+-    private BigDecimal unrecognizedAmount;
+-    private BigDecimal chargedOffAmount;
+-    private BigDecimal adjustmentAmount;
+-    private List<AmortizationMappingData> amortizationMappings;
++public record LoanAmortizationAllocationData(
++        Long loanId,
++        ExternalId loanExternalId,
++        Long baseLoanTransactionId,
++        LocalDate baseLoanTransactionDate,
++        BigDecimal baseLoanTransactionAmount,
++        BigDecimal unrecognizedAmount,
++        BigDecimal chargedOffAmount,
++        BigDecimal adjustmentAmount,
++        List<AmortizationMappingData> amortizationMappings
++) implements Serializable {
++
++    public static LoanAmortizationAllocationDataBuilder builder() {
++        return new LoanAmortizationAllocationDataBuilder();
++    }
+ 
+     /**
+      * Data transfer object for amortization mapping details
+      */
+-    @Getter
+-    @Builder
+-    @AllArgsConstructor
+-    public static class AmortizationMappingData {
++    public record AmortizationMappingData(
++            Long amortizationLoanTransactionId,
++            ExternalId amortizationLoanTransactionExternalId,
++            LocalDate date,
++            AmortizationType type,
++            BigDecimal amount
++    ) implements Serializable {
++
++        public static AmortizationMappingDataBuilder builder() {
++            return new AmortizationMappingDataBuilder();
++        }
++    }
++
++    public static class LoanAmortizationAllocationDataBuilder {
++        private Long loanId;
++        private ExternalId loanExternalId;
++        private Long baseLoanTransactionId;
++        private LocalDate baseLoanTransactionDate;
++        private BigDecimal baseLoanTransactionAmount;
++        private BigDecimal unrecognizedAmount;
++        private BigDecimal chargedOffAmount;
++        private BigDecimal adjustmentAmount;
++        private List<AmortizationMappingData> amortizationMappings;
++
++        public LoanAmortizationAllocationDataBuilder loanId(Long loanId) {
++            this.loanId = loanId;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder loanExternalId(ExternalId loanExternalId) {
++            this.loanExternalId = loanExternalId;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder baseLoanTransactionId(Long baseLoanTransactionId) {
++            this.baseLoanTransactionId = baseLoanTransactionId;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder baseLoanTransactionDate(LocalDate baseLoanTransactionDate) {
++            this.baseLoanTransactionDate = baseLoanTransactionDate;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder baseLoanTransactionAmount(BigDecimal baseLoanTransactionAmount) {
++            this.baseLoanTransactionAmount = baseLoanTransactionAmount;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder unrecognizedAmount(BigDecimal unrecognizedAmount) {
++            this.unrecognizedAmount = unrecognizedAmount;
++            return this;
++        }
+ 
++        public LoanAmortizationAllocationDataBuilder chargedOffAmount(BigDecimal chargedOffAmount) {
++            this.chargedOffAmount = chargedOffAmount;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder adjustmentAmount(BigDecimal adjustmentAmount) {
++            this.adjustmentAmount = adjustmentAmount;
++            return this;
++        }
++
++        public LoanAmortizationAllocationDataBuilder amortizationMappings(List<AmortizationMappingData> amortizationMappings) {
++            this.amortizationMappings = amortizationMappings;
++            return this;
++        }
++
++        public LoanAmortizationAllocationData build() {
++            return new LoanAmortizationAllocationData(loanId, loanExternalId, baseLoanTransactionId, baseLoanTransactionDate,
++                    baseLoanTransactionAmount, unrecognizedAmount, chargedOffAmount, adjustmentAmount, amortizationMappings);
++        }
++    }
++
++    public static class AmortizationMappingDataBuilder {
+         private Long amortizationLoanTransactionId;
+         private ExternalId amortizationLoanTransactionExternalId;
+         private LocalDate date;
+-        private AmortizationType type; // AM or AM_ADJ
++        private AmortizationType type;
+         private BigDecimal amount;
++
++        public AmortizationMappingDataBuilder amortizationLoanTransactionId(Long amortizationLoanTransactionId) {
++            this.amortizationLoanTransactionId = amortizationLoanTransactionId;
++            return this;
++        }
++
++        public AmortizationMappingDataBuilder amortizationLoanTransactionExternalId(ExternalId amortizationLoanTransactionExternalId) {
++            this.amortizationLoanTransactionExternalId = amortizationLoanTransactionExternalId;
++            return this;
++        }
++
++        public AmortizationMappingDataBuilder date(LocalDate date) {
++            this.date = date;
++            return this;
++        }
++
++        public AmortizationMappingDataBuilder type(AmortizationType type) {
++            this.type = type;
++            return this;
++        }
++
++        public AmortizationMappingDataBuilder amount(BigDecimal amount) {
++            this.amount = amount;
++            return this;
++        }
++
++        public AmortizationMappingData build() {
++            return new AmortizationMappingData(amortizationLoanTransactionId, amortizationLoanTransactionExternalId, date, type, amount);
++        }
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApplicationTimelineData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApplicationTimelineData.java
+index 1530e6c3c..d9273a11e 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApplicationTimelineData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApplicationTimelineData.java
+@@ -20,62 +20,53 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.time.LocalDate;
+ import java.util.List;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+-import lombok.NoArgsConstructor;
+-import lombok.experimental.Accessors;
+ 
+ /**
+  * Data object represent the important time-line events of a loan application and loan.
+  */
+-@Data
+-@Accessors(chain = true)
+-@AllArgsConstructor
+-@NoArgsConstructor
+-public class LoanApplicationTimelineData {
++public record LoanApplicationTimelineData(
++        LocalDate submittedOnDate,
++        String submittedByUsername,
++        String submittedByFirstname,
++        String submittedByLastname,
++        LocalDate rejectedOnDate,
++        String rejectedByUsername,
++        String rejectedByFirstname,
++        String rejectedByLastname,
++        LocalDate withdrawnOnDate,
++        String withdrawnByUsername,
++        String withdrawnByFirstname,
++        String withdrawnByLastname,
++        LocalDate approvedOnDate,
++        String approvedByUsername,
++        String approvedByFirstname,
++        String approvedByLastname,
++        LocalDate expectedDisbursementDate,
++        LocalDate actualDisbursementDate,
++        String disbursedByUsername,
++        String disbursedByFirstname,
++        String disbursedByLastname,
++        LocalDate closedOnDate,
++        String closedByUsername,
++        String closedByFirstname,
++        String closedByLastname,
++        LocalDate actualMaturityDate,
++        LocalDate expectedMaturityDate,
++        LocalDate writeOffOnDate,
++        String writeOffByUsername,
++        String writeOffByFirstname,
++        String writeOffByLastname,
++        LocalDate chargedOffOnDate,
++        String chargedOffByUsername,
++        String chargedOffByFirstname,
++        String chargedOffByLastname,
++        List<?> disbursementDetails
++) {
+ 
+-    private LocalDate submittedOnDate;
+-    private String submittedByUsername;
+-    private String submittedByFirstname;
+-    private String submittedByLastname;
+-    private LocalDate rejectedOnDate;
+-    private String rejectedByUsername;
+-    private String rejectedByFirstname;
+-    private String rejectedByLastname;
+-    private LocalDate withdrawnOnDate;
+-    private String withdrawnByUsername;
+-    private String withdrawnByFirstname;
+-    private String withdrawnByLastname;
+-    private LocalDate approvedOnDate;
+-    private String approvedByUsername;
+-    private String approvedByFirstname;
+-    private String approvedByLastname;
+-    private LocalDate expectedDisbursementDate;
+-    private LocalDate actualDisbursementDate;
+-    private String disbursedByUsername;
+-    private String disbursedByFirstname;
+-    private String disbursedByLastname;
+-    private LocalDate closedOnDate;
+-    private String closedByUsername;
+-    private String closedByFirstname;
+-    private String closedByLastname;
+-
+-    private LocalDate actualMaturityDate;
+-    private LocalDate expectedMaturityDate;
+-    private LocalDate writeOffOnDate;
+-    private String writeOffByUsername;
+-    private String writeOffByFirstname;
+-    private String writeOffByLastname;
+-
+-    private LocalDate chargedOffOnDate;
+-    private String chargedOffByUsername;
+-    private String chargedOffByFirstname;
+-    private String chargedOffByLastname;
+-
+-    /**
+-     * Full list of disbursement details. Used by Working Capital Loan; for standard Loan this is null.
+-     */
+-    private List<?> disbursementDetails;
++    public LoanApplicationTimelineData() {
++        this(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
++                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
++    }
+ 
+     public LocalDate getDisbursementDate() {
+         LocalDate disbursementDate = this.expectedDisbursementDate;
+@@ -84,4 +75,24 @@ public class LoanApplicationTimelineData {
+         }
+         return disbursementDate;
+     }
++
++    public LoanApplicationTimelineData setSubmittedOnDate(LocalDate submittedOnDate) {
++        return new LoanApplicationTimelineData(submittedOnDate, submittedByUsername, submittedByFirstname, submittedByLastname,
++                rejectedOnDate, rejectedByUsername, rejectedByFirstname, rejectedByLastname, withdrawnOnDate, withdrawnByUsername,
++                withdrawnByFirstname, withdrawnByLastname, approvedOnDate, approvedByUsername, approvedByFirstname, approvedByLastname,
++                expectedDisbursementDate, actualDisbursementDate, disbursedByUsername, disbursedByFirstname, disbursedByLastname,
++                closedOnDate, closedByUsername, closedByFirstname, closedByLastname, actualMaturityDate, expectedMaturityDate,
++                writeOffOnDate, writeOffByUsername, writeOffByFirstname, writeOffByLastname, chargedOffOnDate, chargedOffByUsername,
++                chargedOffByFirstname, chargedOffByLastname, disbursementDetails);
++    }
++
++    public LoanApplicationTimelineData setExpectedDisbursementDate(LocalDate expectedDisbursementDate) {
++        return new LoanApplicationTimelineData(submittedOnDate, submittedByUsername, submittedByFirstname, submittedByLastname,
++                rejectedOnDate, rejectedByUsername, rejectedByFirstname, rejectedByLastname, withdrawnOnDate, withdrawnByUsername,
++                withdrawnByFirstname, withdrawnByLastname, approvedOnDate, approvedByUsername, approvedByFirstname, approvedByLastname,
++                expectedDisbursementDate, actualDisbursementDate, disbursedByUsername, disbursedByFirstname, disbursedByLastname,
++                closedOnDate, closedByUsername, closedByFirstname, closedByLastname, actualMaturityDate, expectedMaturityDate,
++                writeOffOnDate, writeOffByUsername, writeOffByFirstname, writeOffByLastname, chargedOffOnDate, chargedOffByUsername,
++                chargedOffByFirstname, chargedOffByLastname, disbursementDetails);
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovalData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovalData.java
+index 3e84f3998..a4fe6ccee 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovalData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovalData.java
+@@ -18,57 +18,36 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
++import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.Getter;
+ import org.apache.fineract.organisation.monetary.data.CurrencyData;
+ 
+ /**
+  * Immutable data object representing a loan transaction.
+  */
+-@Getter
+-public class LoanApprovalData {
+-
+-    private final LocalDate approvalDate;
+-    private final BigDecimal approvalAmount;
+-    private final BigDecimal netDisbursalAmount;
+-    private final BigDecimal availableDisbursementAmountWithOverApplied;
+-    private final LocalDate expectedDisbursementDate;
+-
+-    // import fields
+-    private LocalDate approvedOnDate;
+-    private String note;
+-    private String dateFormat;
+-    private String locale;
+-    private transient Integer rowIndex;
+-    private CurrencyData currency;
++public record LoanApprovalData(
++        LocalDate approvalDate,
++        BigDecimal approvalAmount,
++        BigDecimal netDisbursalAmount,
++        BigDecimal availableDisbursementAmountWithOverApplied,
++        LocalDate expectedDisbursementDate,
++        LocalDate approvedOnDate,
++        String note,
++        String dateFormat,
++        String locale,
++        transient Integer rowIndex,
++        CurrencyData currency
++) implements Serializable {
+ 
+     public static LoanApprovalData importInstance(LocalDate approvedOnDate, Integer rowIndex, String locale, String dateFormat) {
+-        return new LoanApprovalData(approvedOnDate, rowIndex, locale, dateFormat);
+-    }
+-
+-    private LoanApprovalData(LocalDate approvedOnDate, Integer rowIndex, String locale, String dateFormat) {
+-        this.approvedOnDate = approvedOnDate;
+-        this.rowIndex = rowIndex;
+-        this.dateFormat = dateFormat;
+-        this.locale = locale;
+-        this.note = "";
+-        this.approvalAmount = null;
+-        this.approvalDate = null;
+-        this.netDisbursalAmount = null;
+-        this.availableDisbursementAmountWithOverApplied = null;
+-        this.expectedDisbursementDate = null;
++        return new LoanApprovalData(null, null, null, null, null, approvedOnDate, "", dateFormat, locale, rowIndex, null);
+     }
+ 
+     public LoanApprovalData(final BigDecimal approvalAmount, final LocalDate approvalDate, final BigDecimal netDisbursalAmount,
+             final CurrencyData currency, final BigDecimal availableDisbursementAmountWithOverApplied,
+             final LocalDate expectedDisbursementDate) {
+-        this.approvalDate = approvalDate;
+-        this.approvalAmount = approvalAmount;
+-        this.netDisbursalAmount = netDisbursalAmount;
+-        this.currency = currency;
+-        this.availableDisbursementAmountWithOverApplied = availableDisbursementAmountWithOverApplied;
+-        this.expectedDisbursementDate = expectedDisbursementDate;
++        this(approvalDate, approvalAmount, netDisbursalAmount, availableDisbursementAmountWithOverApplied, expectedDisbursementDate,
++                null, null, null, null, null, currency);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovedAmountHistoryData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovedAmountHistoryData.java
+index 8598d6ea8..0ab2299ab 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovedAmountHistoryData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanApprovedAmountHistoryData.java
+@@ -21,27 +21,16 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.OffsetDateTime;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+-import lombok.NoArgsConstructor;
+-import lombok.experimental.Accessors;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ 
+ /**
+  * Immutable object representing an Approved Amount change operation on a Loan
+- *
+- * Note: no getter/setters required as google-gson will produce json from fields of object.
+  */
+-
+-@Data
+-@NoArgsConstructor
+-@AllArgsConstructor
+-@Accessors(chain = true)
+-public class LoanApprovedAmountHistoryData implements Serializable {
+-
+-    private Long loanId;
+-    private ExternalId externalLoanId;
+-    private BigDecimal newApprovedAmount;
+-    private BigDecimal oldApprovedAmount;
+-    private OffsetDateTime dateOfChange;
++public record LoanApprovedAmountHistoryData(
++        Long loanId,
++        ExternalId externalLoanId,
++        BigDecimal newApprovedAmount,
++        BigDecimal oldApprovedAmount,
++        OffsetDateTime dateOfChange
++) implements Serializable {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
+index 508a463da..dd9bc0d5a 100755
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
+@@ -19,15 +19,11 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Getter;
+-import lombok.RequiredArgsConstructor;
+ 
+-@RequiredArgsConstructor
+-@Getter
+-public class LoanBorrowerCycleData {
+-
+-    private final BigDecimal principal;
+-    private final BigDecimal interestRatePerPeriod;
+-    private final Integer numberOfRepayments;
+-    private final Integer termFrequency;
++public record LoanBorrowerCycleData(
++        BigDecimal principal,
++        BigDecimal interestRatePerPeriod,
++        Integer numberOfRepayments,
++        Integer termFrequency
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargeData.java
+index 4c9a4c5bd..7011bb7cc 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargeData.java
+@@ -21,410 +21,153 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.List;
+-import lombok.AllArgsConstructor;
+-import lombok.Builder;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.data.EnumOptionData;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ import org.apache.fineract.organisation.monetary.data.CurrencyData;
+ import org.apache.fineract.portfolio.charge.data.ChargeData;
+-import org.apache.fineract.portfolio.charge.domain.ChargePaymentMode;
+-import org.apache.fineract.portfolio.charge.domain.ChargeTimeType;
+ 
+-/**
+- * Immutable data object for loan charge data.
+- */
+-@Getter
+-@Builder
+-@AllArgsConstructor
+-public class LoanChargeData {
+-
+-    private final Long id;
+-    private final Long chargeId;
+-    private final String name;
+-    private final EnumOptionData chargeTimeType;
+-
+-    private final LocalDate submittedOnDate;
+-
+-    private final LocalDate dueDate;
+-
+-    private final EnumOptionData chargeCalculationType;
+-
+-    private final BigDecimal percentage;
+-
+-    private final BigDecimal amountPercentageAppliedTo;
+-
+-    private final CurrencyData currency;
+-
+-    private final BigDecimal amount;
+-
+-    private final BigDecimal amountPaid;
+-    private final BigDecimal amountWaived;
+-    private final BigDecimal amountWrittenOff;
+-
+-    private final BigDecimal amountOutstanding;
+-
+-    private final BigDecimal amountOrPercentage;
+-
+-    private final List<ChargeData> chargeOptions;
+-
+-    private final boolean penalty;
+-
+-    private final EnumOptionData chargePaymentMode;
+-
+-    private final boolean paid;
+-
+-    private final boolean waived;
+-
+-    private final boolean chargePayable;
+-
+-    private final Long loanId;
+-
+-    private final BigDecimal minCap;
+-
+-    private final BigDecimal maxCap;
+-
+-    private final List<LoanInstallmentChargeData> installmentChargeData;
+-
+-    private BigDecimal amountAccrued;
+-
+-    private BigDecimal amountUnrecognized;
+-
+-    private final ExternalId externalId;
+-
+-    private final ExternalId externalLoanId;
+-
+-    public static LoanChargeData template(final List<ChargeData> chargeOptions) {
+-        return new LoanChargeData(null, null, null, null, null, null, null, null, chargeOptions, false, null, false, false, null,
+-                ExternalId.empty(), null, null, null, null, ExternalId.empty());
++public record LoanChargeData(
++        Long id,
++        Long chargeId,
++        String name,
++        EnumOptionData chargeTimeType,
++        LocalDate submittedOnDate,
++        LocalDate dueDate,
++        EnumOptionData chargeCalculationType,
++        BigDecimal percentage,
++        BigDecimal amountPercentageAppliedTo,
++        CurrencyData currency,
++        BigDecimal amount,
++        BigDecimal amountPaid,
++        BigDecimal amountWaived,
++        BigDecimal amountWrittenOff,
++        BigDecimal amountOutstanding,
++        BigDecimal amountOrPercentage,
++        List<ChargeData> chargeOptions,
++        boolean penalty,
++        EnumOptionData chargePaymentMode,
++        boolean paid,
++        boolean waived,
++        boolean chargePayable,
++        Long loanId,
++        BigDecimal minCap,
++        BigDecimal maxCap,
++        List<LoanInstallmentChargeData> installmentChargeData,
++        BigDecimal amountAccrued,
++        BigDecimal amountUnrecognized,
++        ExternalId externalId,
++        ExternalId externalLoanId
++) {
++
++    public static LoanChargeData template(List<ChargeData> chargeOptions) {
++        return new LoanChargeData(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
++                chargeOptions, false, null, false, false, false, null, null, null, null, null, null, ExternalId.empty(), null);
+     }
+ 
+-    /**
+-     * used when populating with details from charge definition (for crud on charges)
+-     */
+-    public static LoanChargeData newLoanChargeDetails(final Long chargeId, final String name, final CurrencyData currency,
+-            final BigDecimal amount, final BigDecimal percentage, final EnumOptionData chargeTimeType,
+-            final EnumOptionData chargeCalculationType, final boolean penalty, final EnumOptionData chargePaymentMode,
+-            final BigDecimal minCap, final BigDecimal maxCap, final ExternalId externalId) {
+-        return new LoanChargeData(null, chargeId, name, currency, amount, percentage, chargeTimeType, chargeCalculationType, null, penalty,
+-                chargePaymentMode, false, false, null, ExternalId.empty(), minCap, maxCap, null, null, externalId);
++    public static LoanChargeData newLoanChargeDetails(Long chargeId, String name, CurrencyData currency, BigDecimal amount,
++            BigDecimal percentage, EnumOptionData chargeTimeType, EnumOptionData chargeCalculationType, boolean penalty,
++            EnumOptionData chargePaymentMode, BigDecimal minCap, BigDecimal maxCap, ExternalId externalId) {
++        return new LoanChargeData(null, chargeId, name, currency, amount, null, null, null, null, null, null, null, null, null, null,
++                null, null, penalty, chargePaymentMode, false, false, false, null, minCap, maxCap, null, null, null, externalId, null);
+     }
+ 
+-    public LoanChargeData(final Long id, final Long chargeId, final String name, final CurrencyData currency, final BigDecimal amount,
+-            final BigDecimal amountPaid, final BigDecimal amountWaived, final BigDecimal amountWrittenOff,
+-            final BigDecimal amountOutstanding, final EnumOptionData chargeTimeType, final LocalDate submittedOnDate,
+-            final LocalDate dueDate, final EnumOptionData chargeCalculationType, final BigDecimal percentage,
+-            final BigDecimal amountPercentageAppliedTo, final boolean penalty, final EnumOptionData chargePaymentMode, final boolean paid,
+-            final boolean waived, final Long loanId, final ExternalId externalLoanId, final BigDecimal minCap, final BigDecimal maxCap,
+-            final BigDecimal amountOrPercentage, List<LoanInstallmentChargeData> installmentChargeData, final ExternalId externalId) {
+-        this.id = id;
+-        this.chargeId = chargeId;
+-        this.name = name;
+-        this.currency = currency;
+-        this.amount = amount;
+-        this.amountPaid = amountPaid;
+-        this.amountWaived = amountWaived;
+-        this.amountWrittenOff = amountWrittenOff;
+-        this.amountOutstanding = amountOutstanding;
+-        this.chargeTimeType = chargeTimeType;
+-        this.submittedOnDate = submittedOnDate;
+-        this.dueDate = dueDate;
+-        this.chargeCalculationType = chargeCalculationType;
+-        this.percentage = percentage;
+-        this.amountPercentageAppliedTo = amountPercentageAppliedTo;
+-        this.penalty = penalty;
+-        this.chargePaymentMode = chargePaymentMode;
+-        this.paid = paid;
+-        this.waived = waived;
+-        this.minCap = minCap;
+-        this.maxCap = maxCap;
+-        if (amountOrPercentage == null) {
+-            if (chargeCalculationType != null && chargeCalculationType.getId().intValue() > 1) {
+-                this.amountOrPercentage = this.percentage;
+-            } else {
+-                this.amountOrPercentage = amount;
+-            }
+-        } else {
+-            this.amountOrPercentage = amountOrPercentage;
+-        }
+-
+-        this.chargeOptions = null;
+-        this.chargePayable = isChargePayable();
+-        this.loanId = loanId;
+-        this.installmentChargeData = installmentChargeData;
+-        this.amountAccrued = null;
+-        this.amountUnrecognized = null;
+-        this.externalId = externalId;
+-        this.externalLoanId = externalLoanId;
++    public LoanChargeData(Long id, Long chargeId, String name, CurrencyData currency, BigDecimal amount, BigDecimal amountPaid,
++            BigDecimal amountWaived, BigDecimal amountWrittenOff, BigDecimal amountOutstanding, EnumOptionData chargeTimeType,
++            LocalDate submittedOnDate, LocalDate dueDate, EnumOptionData chargeCalculationType, BigDecimal percentage,
++            BigDecimal amountPercentageAppliedTo, boolean penalty, EnumOptionData chargePaymentMode, boolean paid, boolean waived,
++            Long loanId, ExternalId externalLoanId, BigDecimal minCap, BigDecimal maxCap, BigDecimal amountOrPercentage,
++            List<LoanInstallmentChargeData> installmentChargeData, ExternalId externalId) {
++        this(id, chargeId, name, chargeTimeType, submittedOnDate, dueDate, chargeCalculationType, percentage, amountPercentageAppliedTo,
++                currency, amount, amountPaid, amountWaived, amountWrittenOff, amountOutstanding,
++                amountOrPercentage == null
++                        ? (chargeCalculationType != null && chargeCalculationType.getId().intValue() > 1 ? percentage : amount)
++                        : amountOrPercentage,
++                null, penalty, chargePaymentMode, paid, waived, isChargePayable(penalty, chargePaymentMode, paid, waived), loanId, minCap,
++                maxCap, installmentChargeData, null, null, externalId, externalLoanId);
+     }
+ 
+-    private LoanChargeData(final Long id, final Long chargeId, final String name, final CurrencyData currency, final BigDecimal amount,
+-            final BigDecimal percentage, final EnumOptionData chargeTimeType, final EnumOptionData chargeCalculationType,
+-            final List<ChargeData> chargeOptions, final boolean penalty, final EnumOptionData chargePaymentMode, final boolean paid,
+-            final boolean waived, final Long loanId, final ExternalId externalLoanId, final BigDecimal minCap, final BigDecimal maxCap,
+-            final BigDecimal amountOrPercentage, List<LoanInstallmentChargeData> installmentChargeData, final ExternalId externalId) {
+-        this.id = id;
+-        this.chargeId = chargeId;
+-        this.name = name;
+-        this.currency = currency;
+-        this.amount = amount;
+-        this.amountPaid = BigDecimal.ZERO;
+-        this.amountWaived = BigDecimal.ZERO;
+-        this.amountWrittenOff = BigDecimal.ZERO;
+-        this.amountOutstanding = amount;
+-        this.chargeTimeType = chargeTimeType;
+-        this.submittedOnDate = null;
+-        this.dueDate = null;
+-        this.chargeCalculationType = chargeCalculationType;
+-        this.percentage = percentage;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = penalty;
+-        this.chargePaymentMode = chargePaymentMode;
+-        this.paid = paid;
+-        this.waived = waived;
+-
+-        if (amountOrPercentage == null) {
+-            if (chargeCalculationType != null && chargeCalculationType.getId().intValue() > 1) {
+-                this.amountOrPercentage = this.percentage;
+-            } else {
+-                this.amountOrPercentage = amount;
+-            }
+-        } else {
+-            this.amountOrPercentage = amountOrPercentage;
+-        }
+-
+-        this.chargeOptions = chargeOptions;
+-        this.chargePayable = isChargePayable();
+-        this.loanId = loanId;
+-        this.externalLoanId = externalLoanId;
+-        this.minCap = minCap;
+-        this.maxCap = maxCap;
+-        this.installmentChargeData = installmentChargeData;
+-        this.amountAccrued = null;
+-        this.amountUnrecognized = null;
+-        this.externalId = externalId;
++    public LoanChargeData(Long id, Long chargeId, String name, CurrencyData currency, BigDecimal amount, BigDecimal percentage,
++            EnumOptionData chargeTimeType, EnumOptionData chargeCalculationType, List<ChargeData> chargeOptions, boolean penalty,
++            EnumOptionData chargePaymentMode, boolean paid, boolean waived, Long loanId, ExternalId externalLoanId, BigDecimal minCap,
++            BigDecimal maxCap, BigDecimal amountOrPercentage, List<LoanInstallmentChargeData> installmentChargeData,
++            ExternalId externalId) {
++        this(id, chargeId, name, chargeTimeType, null, null, chargeCalculationType, percentage, null, currency, amount, BigDecimal.ZERO,
++                BigDecimal.ZERO, BigDecimal.ZERO, amount,
++                amountOrPercentage == null
++                        ? (chargeCalculationType != null && chargeCalculationType.getId().intValue() > 1 ? percentage : amount)
++                        : amountOrPercentage,
++                chargeOptions, penalty, chargePaymentMode, paid, waived,
++                isChargePayable(penalty, chargePaymentMode, paid, waived), loanId, minCap, maxCap, installmentChargeData, null, null,
++                externalId, externalLoanId);
+     }
+ 
+-    public LoanChargeData(final Long id, final LocalDate dueAsOfDate, final LocalDate submittedOnDate, final BigDecimal amountOutstanding,
+-            EnumOptionData chargeTimeType, final Long loanId, final ExternalId externalLoanId,
+-            List<LoanInstallmentChargeData> installmentChargeData, final ExternalId externalId) {
+-        this.id = id;
+-        this.chargeId = null;
+-        this.name = null;
+-        this.currency = null;
+-        this.amount = null;
+-        this.amountPaid = null;
+-        this.amountWaived = null;
+-        this.amountWrittenOff = null;
+-        this.amountOutstanding = amountOutstanding;
+-        this.chargeTimeType = chargeTimeType;
+-        this.submittedOnDate = submittedOnDate;
+-        this.dueDate = dueAsOfDate;
+-        this.chargeCalculationType = null;
+-        this.percentage = null;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = false;
+-        this.chargePaymentMode = null;
+-        this.paid = false;
+-        this.waived = false;
+-        this.amountOrPercentage = null;
+-        this.chargeOptions = null;
+-        this.chargePayable = false;
+-        this.loanId = loanId;
+-        this.minCap = null;
+-        this.maxCap = null;
+-        this.installmentChargeData = installmentChargeData;
+-        this.amountAccrued = null;
+-        this.amountUnrecognized = null;
+-        this.externalId = externalId;
+-        this.externalLoanId = externalLoanId;
++    public LoanChargeData(Long id, LocalDate dueAsOfDate, LocalDate submittedOnDate, BigDecimal amountOutstanding,
++            EnumOptionData chargeTimeType, Long loanId, ExternalId externalLoanId, List<LoanInstallmentChargeData> installmentChargeData,
++            ExternalId externalId) {
++        this(id, null, null, chargeTimeType, submittedOnDate, dueAsOfDate, null, null, null, null, null, null, null, null,
++                amountOutstanding, null, null, false, null, false, false, false, loanId, null, null, installmentChargeData, null, null,
++                externalId, externalLoanId);
+     }
+ 
+-    public LoanChargeData(final Long id, final Long chargeId, final LocalDate dueAsOfDate, final LocalDate submittedOnDate,
+-            EnumOptionData chargeTimeType, final BigDecimal amount, final BigDecimal amountAccrued, final BigDecimal amountWaived,
+-            final boolean penalty, final ExternalId externalId) {
+-        this.id = id;
+-        this.chargeId = chargeId;
+-        this.name = null;
+-        this.currency = null;
+-        this.amount = amount;
+-        this.amountPaid = null;
+-        this.amountWaived = amountWaived;
+-        this.amountWrittenOff = null;
+-        this.amountOutstanding = null;
+-        this.chargeTimeType = chargeTimeType;
+-        this.submittedOnDate = submittedOnDate;
+-        this.dueDate = dueAsOfDate;
+-        this.chargeCalculationType = null;
+-        this.percentage = null;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = penalty;
+-        this.chargePaymentMode = null;
+-        this.paid = false;
+-        this.waived = false;
+-        this.amountOrPercentage = null;
+-        this.chargeOptions = null;
+-        this.chargePayable = false;
+-        this.loanId = null;
+-        this.externalLoanId = ExternalId.empty();
+-        this.minCap = null;
+-        this.maxCap = null;
+-        this.installmentChargeData = null;
+-        this.amountAccrued = amountAccrued;
+-        this.amountUnrecognized = null;
+-        this.externalId = externalId;
++    public LoanChargeData(Long id, Long chargeId, LocalDate dueAsOfDate, LocalDate submittedOnDate, EnumOptionData chargeTimeType,
++            BigDecimal amount, BigDecimal amountAccrued, BigDecimal amountWaived, boolean penalty, ExternalId externalId) {
++        this(id, chargeId, null, chargeTimeType, submittedOnDate, dueAsOfDate, null, null, null, null, amount, null, amountWaived, null,
++                null, null, null, penalty, null, false, false, false, null, null, null, null, amountAccrued, null, externalId,
++                ExternalId.empty());
+     }
+ 
+-    public LoanChargeData(final BigDecimal amountUnrecognized, final LoanChargeData chargeData) {
+-        this.id = chargeData.id;
+-        this.chargeId = chargeData.chargeId;
+-        this.name = null;
+-        this.currency = null;
+-        this.amount = chargeData.amount;
+-        this.amountPaid = null;
+-        this.amountWaived = chargeData.amountWaived;
+-        this.amountWrittenOff = null;
+-        this.amountOutstanding = null;
+-        this.chargeTimeType = chargeData.chargeTimeType;
+-        this.submittedOnDate = chargeData.submittedOnDate;
+-        this.dueDate = chargeData.dueDate;
+-        this.chargeCalculationType = null;
+-        this.percentage = null;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = chargeData.penalty;
+-        this.chargePaymentMode = null;
+-        this.paid = false;
+-        this.waived = false;
+-        this.amountOrPercentage = null;
+-        this.chargeOptions = null;
+-        this.chargePayable = false;
+-        this.loanId = null;
+-        this.externalLoanId = ExternalId.empty();
+-        this.minCap = null;
+-        this.maxCap = null;
+-        this.installmentChargeData = null;
+-        this.amountAccrued = chargeData.amountAccrued;
+-        this.amountUnrecognized = amountUnrecognized;
+-        this.externalId = chargeData.externalId;
++    public LoanChargeData(BigDecimal amountUnrecognized, LoanChargeData chargeData) {
++        this(chargeData.id, chargeData.chargeId, null, chargeData.chargeTimeType, chargeData.submittedOnDate, chargeData.dueDate, null,
++                null, null, null, chargeData.amount, null, chargeData.amountWaived, null, null, null, null, chargeData.penalty, null,
++                false, false, false, null, null, null, null, chargeData.amountAccrued, amountUnrecognized, chargeData.externalId,
++                ExternalId.empty());
+     }
+ 
+     public LoanChargeData(LoanChargeData chargeData, List<LoanInstallmentChargeData> installmentChargeData) {
+-        this.id = chargeData.id;
+-        this.chargeId = chargeData.chargeId;
+-        this.name = chargeData.name;
+-        this.currency = chargeData.currency;
+-        this.amount = chargeData.amount;
+-        this.amountPaid = chargeData.amountPaid;
+-        this.amountWaived = chargeData.amountWaived;
+-        this.amountWrittenOff = chargeData.amountWrittenOff;
+-        this.amountOutstanding = chargeData.amountOutstanding;
+-        this.chargeTimeType = chargeData.chargeTimeType;
+-        this.submittedOnDate = chargeData.submittedOnDate;
+-        this.dueDate = chargeData.dueDate;
+-        this.chargeCalculationType = chargeData.chargeCalculationType;
+-        this.percentage = chargeData.percentage;
+-        this.amountPercentageAppliedTo = chargeData.amountPercentageAppliedTo;
+-        this.penalty = chargeData.penalty;
+-        this.chargePaymentMode = chargeData.chargePaymentMode;
+-        this.paid = chargeData.paid;
+-        this.waived = chargeData.waived;
+-        this.minCap = chargeData.minCap;
+-        this.maxCap = chargeData.maxCap;
+-        this.amountOrPercentage = chargeData.amountOrPercentage;
+-        this.chargeOptions = chargeData.chargeOptions;
+-        this.chargePayable = chargeData.chargePayable;
+-        this.loanId = chargeData.loanId;
+-        this.externalLoanId = chargeData.externalLoanId;
+-        this.installmentChargeData = installmentChargeData;
+-        this.amountAccrued = chargeData.amountAccrued;
+-        this.amountUnrecognized = chargeData.amountUnrecognized;
+-        this.externalId = chargeData.externalId;
++        this(chargeData.id, chargeData.chargeId, chargeData.name, chargeData.chargeTimeType, chargeData.submittedOnDate,
++                chargeData.dueDate, chargeData.chargeCalculationType, chargeData.percentage, chargeData.amountPercentageAppliedTo,
++                chargeData.currency, chargeData.amount, chargeData.amountPaid, chargeData.amountWaived, chargeData.amountWrittenOff,
++                chargeData.amountOutstanding, chargeData.amountOrPercentage, chargeData.chargeOptions, chargeData.penalty,
++                chargeData.chargePaymentMode, chargeData.paid, chargeData.waived, chargeData.chargePayable, chargeData.loanId,
++                chargeData.minCap, chargeData.maxCap, installmentChargeData, chargeData.amountAccrued, chargeData.amountUnrecognized,
++                chargeData.externalId, chargeData.externalLoanId);
+     }
+ 
+-    public LoanChargeData(final Long id, final LocalDate dueAsOfDate, final BigDecimal amount, final EnumOptionData chargeCalculationType,
+-            final EnumOptionData chargeTimeType) {
+-        this.id = null;
+-        this.chargeId = id;
+-        this.name = null;
+-        this.currency = null;
+-        this.amount = amount;
+-        this.amountPaid = null;
+-        this.amountWaived = null;
+-        this.amountWrittenOff = null;
+-        this.amountOutstanding = null;
+-        this.chargeTimeType = chargeTimeType;
+-        this.submittedOnDate = null;
+-        this.dueDate = dueAsOfDate;
+-        this.chargeCalculationType = chargeCalculationType;
+-        this.percentage = null;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = false;
+-        this.chargePaymentMode = null;
+-        this.paid = false;
+-        this.waived = false;
+-        this.amountOrPercentage = null;
+-        this.chargeOptions = null;
+-        this.chargePayable = false;
+-        this.loanId = null;
+-        this.externalLoanId = ExternalId.empty();
+-        this.minCap = null;
+-        this.maxCap = null;
+-        this.installmentChargeData = null;
+-        this.amountAccrued = null;
+-        this.amountUnrecognized = null;
+-        this.externalId = ExternalId.empty();
++    public LoanChargeData(Long id, LocalDate dueAsOfDate, BigDecimal amount, EnumOptionData chargeCalculationType,
++            EnumOptionData chargeTimeType) {
++        this(null, id, null, chargeTimeType, null, dueAsOfDate, chargeCalculationType, null, null, null, amount, null, null, null, null,
++                null, null, false, null, false, false, false, null, null, null, null, null, null, ExternalId.empty(),
++                ExternalId.empty());
+     }
+ 
+-    public LoanChargeData(final Long id, final LocalDate dueAsOfDate, final BigDecimal amountOrPercentage) {
+-        this.id = id;
+-        this.chargeId = null;
+-        this.name = null;
+-        this.currency = null;
+-        this.amount = null;
+-        this.amountPaid = null;
+-        this.amountWaived = null;
+-        this.amountWrittenOff = null;
+-        this.amountOutstanding = null;
+-        this.chargeTimeType = null;
+-        this.submittedOnDate = null;
+-        this.dueDate = dueAsOfDate;
+-        this.chargeCalculationType = null;
+-        this.percentage = null;
+-        this.amountPercentageAppliedTo = null;
+-        this.penalty = false;
+-        this.chargePaymentMode = null;
+-        this.paid = false;
+-        this.waived = false;
+-        this.amountOrPercentage = amountOrPercentage;
+-        this.chargeOptions = null;
+-        this.chargePayable = false;
+-        this.loanId = null;
+-        this.externalLoanId = ExternalId.empty();
+-        this.minCap = null;
+-        this.maxCap = null;
+-        this.installmentChargeData = null;
+-        this.amountAccrued = null;
+-        this.amountUnrecognized = null;
+-        this.externalId = ExternalId.empty();
++    public LoanChargeData(Long id, LocalDate dueAsOfDate, BigDecimal amountOrPercentage) {
++        this(id, null, null, null, null, dueAsOfDate, null, null, null, null, null, null, null, null, null, amountOrPercentage, null,
++                false, null, false, false, false, null, null, null, null, null, null, ExternalId.empty(), ExternalId.empty());
+     }
+ 
+-    public boolean isChargePayable() {
+-        boolean isAccountTransfer = false;
+-        if (this.chargePaymentMode != null) {
+-            isAccountTransfer = ChargePaymentMode.fromInt(this.chargePaymentMode.getId().intValue()).isPaymentModeAccountTransfer();
++    private static boolean isChargePayable(boolean penalty, EnumOptionData chargePaymentMode, boolean paid, boolean waived) {
++        if (chargePaymentMode == null) {
++            return false;
+         }
+-        return isAccountTransfer && !this.paid && !this.waived;
++        return org.apache.fineract.portfolio.charge.domain.ChargePaymentMode.fromInt(chargePaymentMode.getId().intValue())
++                .isPaymentModeAccountTransfer() && !paid && !waived;
++    }
++
++    public boolean isChargePayable() {
++        return chargePayable;
+     }
+ 
+     public boolean isInstallmentFee() {
+-        boolean isInstalmentFee = false;
+-        if (this.chargeTimeType != null) {
+-            isInstalmentFee = ChargeTimeType.fromInt(this.chargeTimeType.getId().intValue()).isInstalmentFee();
++        if (chargeTimeType == null) {
++            return false;
+         }
+-        return isInstalmentFee;
++        return org.apache.fineract.portfolio.charge.domain.ChargeTimeType.fromInt(chargeTimeType.getId().intValue()).isInstalmentFee();
+     }
+ 
+-    public void updateAmountAccrued(BigDecimal amountAccrued) {
+-        this.amountAccrued = amountAccrued;
++    public LoanChargeData withAmountAccrued(BigDecimal amountAccrued) {
++        return new LoanChargeData(id, chargeId, name, chargeTimeType, submittedOnDate, dueDate, chargeCalculationType, percentage,
++                amountPercentageAppliedTo, currency, amount, amountPaid, amountWaived, amountWrittenOff, amountOutstanding,
++                amountOrPercentage, chargeOptions, penalty, chargePaymentMode, paid, waived, chargePayable, loanId, minCap, maxCap,
++                installmentChargeData, amountAccrued, amountUnrecognized, externalId, externalLoanId);
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByDTO.java
+index 6e2c130bd..fe43b041d 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByDTO.java
+@@ -21,20 +21,24 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import java.math.BigDecimal;
+ import java.util.ArrayList;
+ import java.util.List;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+-import lombok.NoArgsConstructor;
+ 
+-@Data
+-@NoArgsConstructor
+-@AllArgsConstructor
+-public class LoanChargePaidByDTO {
++public record LoanChargePaidByDTO(
++        Long chargeId,
++        Boolean isPenalty,
++        Long loanChargeId,
++        BigDecimal amount,
++        Integer installmentNumber,
++        List<ChargeTaxDetailDTO> taxDetails
++) {
+ 
+-    private Long chargeId;
+-    private Boolean isPenalty;
+-    private Long loanChargeId;
+-    private BigDecimal amount;
+-    private Integer installmentNumber;
+-    private List<ChargeTaxDetailDTO> taxDetails = new ArrayList<>();
++    public LoanChargePaidByDTO() {
++        this(null, null, null, null, null, new ArrayList<>());
++    }
+ 
++    public List<ChargeTaxDetailDTO> taxDetails() {
++        if (taxDetails == null) {
++            return new ArrayList<>();
++        }
++        return taxDetails;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByData.java
+index 20b06f28b..8391ed422 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidByData.java
+@@ -21,42 +21,26 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import java.io.Serial;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+-import lombok.Data;
+-import lombok.Getter;
+ import org.springframework.integration.annotation.Default;
+ 
+-@Data
+-@Getter
+-public class LoanChargePaidByData implements Serializable {
++public record LoanChargePaidByData(
++        Long id,
++        BigDecimal amount,
++        Integer installmentNumber,
++        Long chargeId,
++        Long transactionId,
++        String name
++) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private Long id;
+-    private BigDecimal amount;
+-    private Integer installmentNumber;
+-    private Long chargeId;
+-    private Long transactionId;
+-    private String name;
+-
+     @Default
+-    public LoanChargePaidByData(Long id, BigDecimal amount, Integer installmentNumber, Long chargeId, Long transactionId, String name) {
+-        this.id = id;
+-        this.amount = amount;
+-        this.installmentNumber = installmentNumber;
+-        this.chargeId = chargeId;
+-        this.transactionId = transactionId;
+-        this.name = name;
++    public LoanChargePaidByData {
+     }
+ 
+     public LoanChargePaidByData(final Long id, final BigDecimal amount, final Integer installmentNumber, final Long chargeId,
+             final Long transactionId) {
+-        this.id = id;
+-        this.amount = amount;
+-        this.installmentNumber = installmentNumber;
+-        this.chargeId = chargeId;
+-        this.transactionId = transactionId;
+-        this.name = null;
++        this(id, amount, installmentNumber, chargeId, transactionId, null);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+index 5b75fa9f1..413124f56 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+@@ -21,27 +21,9 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import org.apache.fineract.organisation.monetary.domain.Money;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
+ 
+-public class LoanChargePaidDetail {
+-
+-    private final Money amount;
+-    private final LoanRepaymentScheduleInstallment installment;
+-    private final boolean isFeeCharge;
+-
+-    public LoanChargePaidDetail(Money amount, LoanRepaymentScheduleInstallment installment, boolean isFeeCharge) {
+-        this.amount = amount;
+-        this.installment = installment;
+-        this.isFeeCharge = isFeeCharge;
+-    }
+-
+-    public Money getAmount() {
+-        return this.amount;
+-    }
+-
+-    public LoanRepaymentScheduleInstallment getInstallment() {
+-        return this.installment;
+-    }
+-
+-    public boolean isFeeCharge() {
+-        return this.isFeeCharge;
+-    }
++public record LoanChargePaidDetail(
++        Money amount,
++        LoanRepaymentScheduleInstallment installment,
++        boolean isFeeCharge
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
+index bed684423..5fa912cff 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
+@@ -19,20 +19,12 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public class LoanCollateralManagementData {
+-
+-    private Long clientCollateralId;
+-
+-    private BigDecimal quantity;
+-
+-    private BigDecimal total;
+-
+-    private BigDecimal totalCollateral;
+-
+-    private Long id;
++public record LoanCollateralManagementData(
++        Long clientCollateralId,
++        BigDecimal quantity,
++        BigDecimal total,
++        BigDecimal totalCollateral,
++        Long id
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
+index ac2408c3c..8b612842d 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
+@@ -18,53 +18,13 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+-public class LoanConvenienceData {
+-
+-    private final int maxSubmittedOnOffsetFromToday;
+-    private final int maxApprovedOnOffsetFromToday;
+-    private final int maxDisbursedOnOffsetFromToday;
+-    private final int expectedLoanTermInDays;
+-    private final int actualLoanTermInDays;
+-    private final int expectedLoanTermInMonths;
+-    private final int actualLoanTermInMonths;
+-
+-    public LoanConvenienceData(final int maxSubmittedOnOffsetFromToday, final int maxApprovedOnOffsetFromToday,
+-            final int maxDisbursedOnOffsetFromToday, final int expectedLoanTermInDays, final int actualLoanTermInDays,
+-            final int expectedLoanTermInMonths, final int actualLoanTermInMonths) {
+-        this.maxSubmittedOnOffsetFromToday = maxSubmittedOnOffsetFromToday;
+-        this.maxApprovedOnOffsetFromToday = maxApprovedOnOffsetFromToday;
+-        this.maxDisbursedOnOffsetFromToday = maxDisbursedOnOffsetFromToday;
+-        this.expectedLoanTermInDays = expectedLoanTermInDays;
+-        this.actualLoanTermInDays = actualLoanTermInDays;
+-        this.expectedLoanTermInMonths = expectedLoanTermInMonths;
+-        this.actualLoanTermInMonths = actualLoanTermInMonths;
+-    }
+-
+-    public int getMaxSubmittedOnOffsetFromToday() {
+-        return this.maxSubmittedOnOffsetFromToday;
+-    }
+-
+-    public int getMaxApprovedOnOffsetFromToday() {
+-        return this.maxApprovedOnOffsetFromToday;
+-    }
+-
+-    public int getMaxDisbursedOnOffsetFromToday() {
+-        return this.maxDisbursedOnOffsetFromToday;
+-    }
+-
+-    public int getExpectedLoanTermInDays() {
+-        return this.expectedLoanTermInDays;
+-    }
+-
+-    public int getActualLoanTermInDays() {
+-        return this.actualLoanTermInDays;
+-    }
+-
+-    public int getExpectedLoanTermInMonths() {
+-        return this.expectedLoanTermInMonths;
+-    }
+-
+-    public int getActualLoanTermInMonths() {
+-        return this.actualLoanTermInMonths;
+-    }
++public record LoanConvenienceData(
++        int maxSubmittedOnOffsetFromToday,
++        int maxApprovedOnOffsetFromToday,
++        int maxDisbursedOnOffsetFromToday,
++        int expectedLoanTermInDays,
++        int actualLoanTermInDays,
++        int expectedLoanTermInMonths,
++        int actualLoanTermInMonths
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanDelinquencyData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanDelinquencyData.java
+index 3efaea390..7c96c18ba 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanDelinquencyData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanDelinquencyData.java
+@@ -18,18 +18,14 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
++import java.io.Serializable;
++import java.math.BigDecimal;
++import java.time.LocalDate;
++import java.util.Collection;
+ import java.util.Map;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+-import lombok.Setter;
+-import lombok.ToString;
+ 
+-@AllArgsConstructor
+-@ToString
+-@Getter
+-@Setter
+-public class LoanDelinquencyData {
+-
+-    private CollectionData loanCollectionData;
+-    private Map<Long, CollectionData> loanInstallmentsCollectionData;
++public record LoanDelinquencyData(
++        CollectionData loanCollectionData,
++        Map<Long, CollectionData> loanInstallmentsCollectionData
++) implements Serializable {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanInstallmentChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanInstallmentChargeData.java
+index d0c6c2fe9..5e330cc76 100755
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanInstallmentChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanInstallmentChargeData.java
+@@ -20,20 +20,91 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.Builder;
+-import lombok.Getter;
+-
+-@Getter
+-@Builder
+-public class LoanInstallmentChargeData {
+-
+-    private final Integer installmentNumber;
+-    private final LocalDate dueDate;
+-    private final BigDecimal amount;
+-    private final BigDecimal amountOutstanding;
+-    private final BigDecimal amountWaived;
+-    private final boolean paid;
+-    private final boolean waived;
+-    private BigDecimal amountAccrued;
+-    private BigDecimal amountUnrecognized;
++
++public record LoanInstallmentChargeData(
++        Integer installmentNumber,
++        LocalDate dueDate,
++        BigDecimal amount,
++        BigDecimal amountOutstanding,
++        BigDecimal amountWaived,
++        boolean paid,
++        boolean waived,
++        BigDecimal amountAccrued,
++        BigDecimal amountUnrecognized
++) {
++
++    public LoanInstallmentChargeData {
++        if (amountAccrued == null) {
++            amountAccrued = BigDecimal.ZERO;
++        }
++        if (amountUnrecognized == null) {
++            amountUnrecognized = BigDecimal.ZERO;
++        }
++    }
++
++    public static LoanInstallmentChargeDataBuilder builder() {
++        return new LoanInstallmentChargeDataBuilder();
++    }
++
++    public static class LoanInstallmentChargeDataBuilder {
++        private Integer installmentNumber;
++        private LocalDate dueDate;
++        private BigDecimal amount;
++        private BigDecimal amountOutstanding;
++        private BigDecimal amountWaived;
++        private boolean paid;
++        private boolean waived;
++        private BigDecimal amountAccrued;
++        private BigDecimal amountUnrecognized;
++
++        public LoanInstallmentChargeDataBuilder installmentNumber(Integer installmentNumber) {
++            this.installmentNumber = installmentNumber;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder dueDate(LocalDate dueDate) {
++            this.dueDate = dueDate;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder amount(BigDecimal amount) {
++            this.amount = amount;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder amountOutstanding(BigDecimal amountOutstanding) {
++            this.amountOutstanding = amountOutstanding;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder amountWaived(BigDecimal amountWaived) {
++            this.amountWaived = amountWaived;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder paid(boolean paid) {
++            this.paid = paid;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder waived(boolean waived) {
++            this.waived = waived;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder amountAccrued(BigDecimal amountAccrued) {
++            this.amountAccrued = amountAccrued;
++            return this;
++        }
++
++        public LoanInstallmentChargeDataBuilder amountUnrecognized(BigDecimal amountUnrecognized) {
++            this.amountUnrecognized = amountUnrecognized;
++            return this;
++        }
++
++        public LoanInstallmentChargeData build() {
++            return new LoanInstallmentChargeData(installmentNumber, dueDate, amount, amountOutstanding, amountWaived, paid, waived,
++                    amountAccrued, amountUnrecognized);
++        }
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+index 22daadc5c..bb0be19f5 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+@@ -19,21 +19,16 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public class LoanRefundRequestData {
+-
+-    private final BigDecimal principal;
+-    private final BigDecimal interest;
+-    private final BigDecimal feeCharges;
+-    private final BigDecimal penaltyCharges;
+-    private final BigDecimal overpayment;
++public record LoanRefundRequestData(
++        BigDecimal principal,
++        BigDecimal interest,
++        BigDecimal feeCharges,
++        BigDecimal penaltyCharges,
++        BigDecimal overpayment
++) {
+ 
+     public BigDecimal getTotalAmount() {
+         return principal.add(interest).add(feeCharges).add(penaltyCharges);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
+index 68d07db23..06e0a00a8 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
+@@ -19,17 +19,12 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+-
+-@Getter
+-@AllArgsConstructor
+-public class LoanRepaymentPastDueData {
+-
+-    private final BigDecimal totalAmount;
+-    private final BigDecimal principalAmount;
+-    private final BigDecimal interestAmount;
+-    private final BigDecimal feeAmount;
+-    private final BigDecimal penaltyAmount;
+ 
++public record LoanRepaymentPastDueData(
++        BigDecimal totalAmount,
++        BigDecimal principalAmount,
++        BigDecimal interestAmount,
++        BigDecimal feeAmount,
++        BigDecimal penaltyAmount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+index ad06d82e8..eff50cc0d 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+@@ -22,27 +22,18 @@ import java.io.Serial;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ 
+-@AllArgsConstructor
+-@Getter
+-public final class LoanRepaymentScheduleInstallmentData implements Serializable {
++public record LoanRepaymentScheduleInstallmentData(
++        Long id,
++        Integer installmentId,
++        LocalDate date,
++        BigDecimal amount
++) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private Long id;
+-
+-    private Integer installmentId;
+-
+-    private LocalDate date;
+-
+-    private BigDecimal amount;
+-
+-    public static LoanRepaymentScheduleInstallmentData instanceOf(final Long id, final Integer installmentId, final LocalDate date,
+-            final BigDecimal amount) {
++    public static LoanRepaymentScheduleInstallmentData instanceOf(Long id, Integer installmentId, LocalDate date, BigDecimal amount) {
+         return new LoanRepaymentScheduleInstallmentData(id, installmentId, date, amount);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanScheduleDelinquencyData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanScheduleDelinquencyData.java
+index 7d3fad62a..58f5b56f3 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanScheduleDelinquencyData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanScheduleDelinquencyData.java
+@@ -19,22 +19,15 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.io.Serializable;
++import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+-import lombok.NoArgsConstructor;
+-import lombok.Setter;
++import java.util.Collection;
+ import org.apache.fineract.portfolio.loanaccount.domain.Loan;
+ 
+-@AllArgsConstructor
+-@NoArgsConstructor
+-@Getter
+-@Setter
+-public class LoanScheduleDelinquencyData implements Serializable {
+-
+-    private Long loanId;
+-    private LocalDate overdueSinceDate;
+-    private Long overdueDays;
+-    private Loan loan;
+-
++public record LoanScheduleDelinquencyData(
++        Long loanId,
++        LocalDate overdueSinceDate,
++        Long overdueDays,
++        Loan loan
++) implements Serializable {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanStatusEnumData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanStatusEnumData.java
+index c47742f9e..312288f6a 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanStatusEnumData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanStatusEnumData.java
+@@ -18,7 +18,6 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.config.MapstructMapperConfig;
+ import org.apache.fineract.portfolio.loanaccount.domain.Loan;
+ import org.apache.fineract.portfolio.loanproduct.service.LoanEnumerations;
+@@ -26,33 +25,31 @@ import org.apache.fineract.portfolio.loanproduct.service.LoanEnumerations;
+ /**
+  * Immutable data object represent loan status enumerations.
+  */
+-@Getter
+-public class LoanStatusEnumData {
+-
+-    private final Long id;
+-    private final String code;
+-    private final String value;
+-    private final boolean pendingApproval;
+-    private final boolean waitingForDisbursal;
+-    private final boolean active;
+-    private final boolean closedObligationsMet;
+-    private final boolean closedWrittenOff;
+-    private final boolean closedRescheduled;
+-    private final boolean closed;
+-    private final boolean overpaid;
++public record LoanStatusEnumData(
++        Long id,
++        String code,
++        String value,
++        boolean pendingApproval,
++        boolean waitingForDisbursal,
++        boolean active,
++        boolean closedObligationsMet,
++        boolean closedWrittenOff,
++        boolean closedRescheduled,
++        boolean closed,
++        boolean overpaid
++) {
+ 
+     public LoanStatusEnumData(final Long id, final String code, final String value) {
+-        this.id = id;
+-        this.code = code;
+-        this.value = value;
+-        this.pendingApproval = Long.valueOf(100).equals(this.id);
+-        this.waitingForDisbursal = Long.valueOf(200).equals(this.id);
+-        this.active = Long.valueOf(300).equals(this.id);
+-        this.closedObligationsMet = Long.valueOf(600).equals(this.id);
+-        this.closedWrittenOff = Long.valueOf(601).equals(this.id);
+-        this.closedRescheduled = Long.valueOf(602).equals(this.id);
++        this(id, code, value,
++                Long.valueOf(100).equals(id),
++                Long.valueOf(200).equals(id),
++                Long.valueOf(300).equals(id),
++                Long.valueOf(600).equals(id),
++                Long.valueOf(601).equals(id),
++                Long.valueOf(602).equals(id),
++                false,
++                Long.valueOf(700).equals(id));
+         this.closed = this.closedObligationsMet || this.closedWrittenOff || this.closedRescheduled;
+-        this.overpaid = Long.valueOf(700).equals(this.id);
+     }
+ 
+     @org.mapstruct.Mapper(config = MapstructMapperConfig.class)
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanSummaryData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanSummaryData.java
+index 61ba8701d..002604c81 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanSummaryData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanSummaryData.java
+@@ -20,83 +20,468 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.Builder;
+-import lombok.Data;
+-import lombok.experimental.Accessors;
+ import org.apache.fineract.organisation.monetary.data.CurrencyData;
+ 
+ /**
+  * Immutable data object representing loan summary information.
+  */
+-@Data
+-@Builder
+-@Accessors(chain = true)
+-public class LoanSummaryData {
+-
+-    private final CurrencyData currency;
+-    private final BigDecimal totalPrincipal;
+-    private final BigDecimal totalCapitalizedIncome;
+-    private final BigDecimal totalCapitalizedIncomeAdjustment;
+-    private final BigDecimal principalDisbursed;
+-    private final BigDecimal principalAdjustments;
+-    private final BigDecimal principalPaid;
+-    private final BigDecimal principalWrittenOff;
+-    private final BigDecimal principalOutstanding;
+-    private final BigDecimal principalOverdue;
+-    private final BigDecimal interestCharged;
+-    private final BigDecimal interestPaid;
+-    private final BigDecimal interestWaived;
+-    private final BigDecimal interestWrittenOff;
+-    private final BigDecimal interestOutstanding;
+-    private final BigDecimal interestOverdue;
+-    private final BigDecimal feeChargesCharged;
+-    private final BigDecimal feeAdjustments;
+-    private final BigDecimal feeChargesDueAtDisbursementCharged;
+-    private final BigDecimal feeChargesPaid;
+-    private final BigDecimal feeChargesWaived;
+-    private final BigDecimal feeChargesWrittenOff;
+-    private final BigDecimal feeChargesOutstanding;
+-    private final BigDecimal feeChargesOverdue;
+-    private final BigDecimal penaltyChargesCharged;
+-    private final BigDecimal penaltyAdjustments;
+-    private final BigDecimal penaltyChargesPaid;
+-    private final BigDecimal penaltyChargesWaived;
+-    private final BigDecimal penaltyChargesWrittenOff;
+-    private final BigDecimal penaltyChargesOutstanding;
+-    private final BigDecimal penaltyChargesOverdue;
+-    private final BigDecimal totalExpectedRepayment;
+-    private final BigDecimal totalRepayment;
+-    private final BigDecimal totalExpectedCostOfLoan;
+-    private final BigDecimal totalCostOfLoan;
+-    private final BigDecimal totalWaived;
+-    private final BigDecimal totalWrittenOff;
+-    private final BigDecimal totalOutstanding;
+-    private final BigDecimal totalOverdue;
+-    private final BigDecimal totalRecovered;
+-    private final LocalDate overdueSinceDate;
+-    private final Long writeoffReasonId;
+-    private final String writeoffReason;
+-
+-    // Adding fields for transaction summary
+-    private BigDecimal totalMerchantRefund;
+-    private BigDecimal totalMerchantRefundReversed;
+-    private BigDecimal totalPayoutRefund;
+-    private BigDecimal totalPayoutRefundReversed;
+-    private BigDecimal totalGoodwillCredit;
+-    private BigDecimal totalGoodwillCreditReversed;
+-    private BigDecimal totalChargeAdjustment;
+-    private BigDecimal totalChargeAdjustmentReversed;
+-    private BigDecimal totalChargeback;
+-    private BigDecimal totalCreditBalanceRefund;
+-    private BigDecimal totalCreditBalanceRefundReversed;
+-    private BigDecimal totalRepaymentTransaction;
+-    private BigDecimal totalRepaymentTransactionReversed;
+-    private BigDecimal totalInterestPaymentWaiver;
+-    private BigDecimal totalInterestRefund;
+-    private final Long chargeOffReasonId;
+-    private final String chargeOffReason;
+-
+-    private BigDecimal totalUnpaidPayableDueInterest;
+-    private BigDecimal totalUnpaidPayableNotDueInterest;
++public record LoanSummaryData(
++        CurrencyData currency,
++        BigDecimal totalPrincipal,
++        BigDecimal totalCapitalizedIncome,
++        BigDecimal totalCapitalizedIncomeAdjustment,
++        BigDecimal principalDisbursed,
++        BigDecimal principalAdjustments,
++        BigDecimal principalPaid,
++        BigDecimal principalWrittenOff,
++        BigDecimal principalOutstanding,
++        BigDecimal principalOverdue,
++        BigDecimal interestCharged,
++        BigDecimal interestPaid,
++        BigDecimal interestWaived,
++        BigDecimal interestWrittenOff,
++        BigDecimal interestOutstanding,
++        BigDecimal interestOverdue,
++        BigDecimal feeChargesCharged,
++        BigDecimal feeAdjustments,
++        BigDecimal feeChargesDueAtDisbursementCharged,
++        BigDecimal feeChargesPaid,
++        BigDecimal feeChargesWaived,
++        BigDecimal feeChargesWrittenOff,
++        BigDecimal feeChargesOutstanding,
++        BigDecimal feeChargesOverdue,
++        BigDecimal penaltyChargesCharged,
++        BigDecimal penaltyAdjustments,
++        BigDecimal penaltyChargesPaid,
++        BigDecimal penaltyChargesWaived,
++        BigDecimal penaltyChargesWrittenOff,
++        BigDecimal penaltyChargesOutstanding,
++        BigDecimal penaltyChargesOverdue,
++        BigDecimal totalExpectedRepayment,
++        BigDecimal totalRepayment,
++        BigDecimal totalExpectedCostOfLoan,
++        BigDecimal totalCostOfLoan,
++        BigDecimal totalWaived,
++        BigDecimal totalWrittenOff,
++        BigDecimal totalOutstanding,
++        BigDecimal totalOverdue,
++        BigDecimal totalRecovered,
++        LocalDate overdueSinceDate,
++        Long writeoffReasonId,
++        String writeoffReason,
++        BigDecimal totalMerchantRefund,
++        BigDecimal totalMerchantRefundReversed,
++        BigDecimal totalPayoutRefund,
++        BigDecimal totalPayoutRefundReversed,
++        BigDecimal totalGoodwillCredit,
++        BigDecimal totalGoodwillCreditReversed,
++        BigDecimal totalChargeAdjustment,
++        BigDecimal totalChargeAdjustmentReversed,
++        BigDecimal totalChargeback,
++        BigDecimal totalCreditBalanceRefund,
++        BigDecimal totalCreditBalanceRefundReversed,
++        BigDecimal totalRepaymentTransaction,
++        BigDecimal totalRepaymentTransactionReversed,
++        BigDecimal totalInterestPaymentWaiver,
++        BigDecimal totalInterestRefund,
++        Long chargeOffReasonId,
++        String chargeOffReason,
++        BigDecimal totalUnpaidPayableDueInterest,
++        BigDecimal totalUnpaidPayableNotDueInterest
++) {
+ 
++    public static LoanSummaryDataBuilder builder() {
++        return new LoanSummaryDataBuilder();
++    }
++
++    public static class LoanSummaryDataBuilder {
++        private CurrencyData currency;
++        private BigDecimal totalPrincipal;
++        private BigDecimal totalCapitalizedIncome;
++        private BigDecimal totalCapitalizedIncomeAdjustment;
++        private BigDecimal principalDisbursed;
++        private BigDecimal principalAdjustments;
++        private BigDecimal principalPaid;
++        private BigDecimal principalWrittenOff;
++        private BigDecimal principalOutstanding;
++        private BigDecimal principalOverdue;
++        private BigDecimal interestCharged;
++        private BigDecimal interestPaid;
++        private BigDecimal interestWaived;
++        private BigDecimal interestWrittenOff;
++        private BigDecimal interestOutstanding;
++        private BigDecimal interestOverdue;
++        private BigDecimal feeChargesCharged;
++        private BigDecimal feeAdjustments;
++        private BigDecimal feeChargesDueAtDisbursementCharged;
++        private BigDecimal feeChargesPaid;
++        private BigDecimal feeChargesWaived;
++        private BigDecimal feeChargesWrittenOff;
++        private BigDecimal feeChargesOutstanding;
++        private BigDecimal feeChargesOverdue;
++        private BigDecimal penaltyChargesCharged;
++        private BigDecimal penaltyAdjustments;
++        private BigDecimal penaltyChargesPaid;
++        private BigDecimal penaltyChargesWaived;
++        private BigDecimal penaltyChargesWrittenOff;
++        private BigDecimal penaltyChargesOutstanding;
++        private BigDecimal penaltyChargesOverdue;
++        private BigDecimal totalExpectedRepayment;
++        private BigDecimal totalRepayment;
++        private BigDecimal totalExpectedCostOfLoan;
++        private BigDecimal totalCostOfLoan;
++        private BigDecimal totalWaived;
++        private BigDecimal totalWrittenOff;
++        private BigDecimal totalOutstanding;
++        private BigDecimal totalOverdue;
++        private BigDecimal totalRecovered;
++        private LocalDate overdueSinceDate;
++        private Long writeoffReasonId;
++        private String writeoffReason;
++        private BigDecimal totalMerchantRefund;
++        private BigDecimal totalMerchantRefundReversed;
++        private BigDecimal totalPayoutRefund;
++        private BigDecimal totalPayoutRefundReversed;
++        private BigDecimal totalGoodwillCredit;
++        private BigDecimal totalGoodwillCreditReversed;
++        private BigDecimal totalChargeAdjustment;
++        private BigDecimal totalChargeAdjustmentReversed;
++        private BigDecimal totalChargeback;
++        private BigDecimal totalCreditBalanceRefund;
++        private BigDecimal totalCreditBalanceRefundReversed;
++        private BigDecimal totalRepaymentTransaction;
++        private BigDecimal totalRepaymentTransactionReversed;
++        private BigDecimal totalInterestPaymentWaiver;
++        private BigDecimal totalInterestRefund;
++        private Long chargeOffReasonId;
++        private String chargeOffReason;
++        private BigDecimal totalUnpaidPayableDueInterest;
++        private BigDecimal totalUnpaidPayableNotDueInterest;
++
++        public LoanSummaryDataBuilder currency(CurrencyData currency) {
++            this.currency = currency;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalPrincipal(BigDecimal totalPrincipal) {
++            this.totalPrincipal = totalPrincipal;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalCapitalizedIncome(BigDecimal totalCapitalizedIncome) {
++            this.totalCapitalizedIncome = totalCapitalizedIncome;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalCapitalizedIncomeAdjustment(BigDecimal totalCapitalizedIncomeAdjustment) {
++            this.totalCapitalizedIncomeAdjustment = totalCapitalizedIncomeAdjustment;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalDisbursed(BigDecimal principalDisbursed) {
++            this.principalDisbursed = principalDisbursed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalAdjustments(BigDecimal principalAdjustments) {
++            this.principalAdjustments = principalAdjustments;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalPaid(BigDecimal principalPaid) {
++            this.principalPaid = principalPaid;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalWrittenOff(BigDecimal principalWrittenOff) {
++            this.principalWrittenOff = principalWrittenOff;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalOutstanding(BigDecimal principalOutstanding) {
++            this.principalOutstanding = principalOutstanding;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder principalOverdue(BigDecimal principalOverdue) {
++            this.principalOverdue = principalOverdue;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestCharged(BigDecimal interestCharged) {
++            this.interestCharged = interestCharged;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestPaid(BigDecimal interestPaid) {
++            this.interestPaid = interestPaid;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestWaived(BigDecimal interestWaived) {
++            this.interestWaived = interestWaived;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestWrittenOff(BigDecimal interestWrittenOff) {
++            this.interestWrittenOff = interestWrittenOff;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestOutstanding(BigDecimal interestOutstanding) {
++            this.interestOutstanding = interestOutstanding;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder interestOverdue(BigDecimal interestOverdue) {
++            this.interestOverdue = interestOverdue;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesCharged(BigDecimal feeChargesCharged) {
++            this.feeChargesCharged = feeChargesCharged;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeAdjustments(BigDecimal feeAdjustments) {
++            this.feeAdjustments = feeAdjustments;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesDueAtDisbursementCharged(BigDecimal feeChargesDueAtDisbursementCharged) {
++            this.feeChargesDueAtDisbursementCharged = feeChargesDueAtDisbursementCharged;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesPaid(BigDecimal feeChargesPaid) {
++            this.feeChargesPaid = feeChargesPaid;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesWaived(BigDecimal feeChargesWaived) {
++            this.feeChargesWaived = feeChargesWaived;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesWrittenOff(BigDecimal feeChargesWrittenOff) {
++            this.feeChargesWrittenOff = feeChargesWrittenOff;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesOutstanding(BigDecimal feeChargesOutstanding) {
++            this.feeChargesOutstanding = feeChargesOutstanding;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder feeChargesOverdue(BigDecimal feeChargesOverdue) {
++            this.feeChargesOverdue = feeChargesOverdue;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesCharged(BigDecimal penaltyChargesCharged) {
++            this.penaltyChargesCharged = penaltyChargesCharged;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyAdjustments(BigDecimal penaltyAdjustments) {
++            this.penaltyAdjustments = penaltyAdjustments;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesPaid(BigDecimal penaltyChargesPaid) {
++            this.penaltyChargesPaid = penaltyChargesPaid;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesWaived(BigDecimal penaltyChargesWaived) {
++            this.penaltyChargesWaived = penaltyChargesWaived;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesWrittenOff(BigDecimal penaltyChargesWrittenOff) {
++            this.penaltyChargesWrittenOff = penaltyChargesWrittenOff;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesOutstanding(BigDecimal penaltyChargesOutstanding) {
++            this.penaltyChargesOutstanding = penaltyChargesOutstanding;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder penaltyChargesOverdue(BigDecimal penaltyChargesOverdue) {
++            this.penaltyChargesOverdue = penaltyChargesOverdue;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalExpectedRepayment(BigDecimal totalExpectedRepayment) {
++            this.totalExpectedRepayment = totalExpectedRepayment;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalRepayment(BigDecimal totalRepayment) {
++            this.totalRepayment = totalRepayment;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalExpectedCostOfLoan(BigDecimal totalExpectedCostOfLoan) {
++            this.totalExpectedCostOfLoan = totalExpectedCostOfLoan;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalCostOfLoan(BigDecimal totalCostOfLoan) {
++            this.totalCostOfLoan = totalCostOfLoan;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalWaived(BigDecimal totalWaived) {
++            this.totalWaived = totalWaived;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalWrittenOff(BigDecimal totalWrittenOff) {
++            this.totalWrittenOff = totalWrittenOff;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalOutstanding(BigDecimal totalOutstanding) {
++            this.totalOutstanding = totalOutstanding;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalOverdue(BigDecimal totalOverdue) {
++            this.totalOverdue = totalOverdue;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalRecovered(BigDecimal totalRecovered) {
++            this.totalRecovered = totalRecovered;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder overdueSinceDate(LocalDate overdueSinceDate) {
++            this.overdueSinceDate = overdueSinceDate;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder writeoffReasonId(Long writeoffReasonId) {
++            this.writeoffReasonId = writeoffReasonId;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder writeoffReason(String writeoffReason) {
++            this.writeoffReason = writeoffReason;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalMerchantRefund(BigDecimal totalMerchantRefund) {
++            this.totalMerchantRefund = totalMerchantRefund;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalMerchantRefundReversed(BigDecimal totalMerchantRefundReversed) {
++            this.totalMerchantRefundReversed = totalMerchantRefundReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalPayoutRefund(BigDecimal totalPayoutRefund) {
++            this.totalPayoutRefund = totalPayoutRefund;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalPayoutRefundReversed(BigDecimal totalPayoutRefundReversed) {
++            this.totalPayoutRefundReversed = totalPayoutRefundReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalGoodwillCredit(BigDecimal totalGoodwillCredit) {
++            this.totalGoodwillCredit = totalGoodwillCredit;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalGoodwillCreditReversed(BigDecimal totalGoodwillCreditReversed) {
++            this.totalGoodwillCreditReversed = totalGoodwillCreditReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalChargeAdjustment(BigDecimal totalChargeAdjustment) {
++            this.totalChargeAdjustment = totalChargeAdjustment;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalChargeAdjustmentReversed(BigDecimal totalChargeAdjustmentReversed) {
++            this.totalChargeAdjustmentReversed = totalChargeAdjustmentReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalChargeback(BigDecimal totalChargeback) {
++            this.totalChargeback = totalChargeback;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalCreditBalanceRefund(BigDecimal totalCreditBalanceRefund) {
++            this.totalCreditBalanceRefund = totalCreditBalanceRefund;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalCreditBalanceRefundReversed(BigDecimal totalCreditBalanceRefundReversed) {
++            this.totalCreditBalanceRefundReversed = totalCreditBalanceRefundReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalRepaymentTransaction(BigDecimal totalRepaymentTransaction) {
++            this.totalRepaymentTransaction = totalRepaymentTransaction;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalRepaymentTransactionReversed(BigDecimal totalRepaymentTransactionReversed) {
++            this.totalRepaymentTransactionReversed = totalRepaymentTransactionReversed;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalInterestPaymentWaiver(BigDecimal totalInterestPaymentWaiver) {
++            this.totalInterestPaymentWaiver = totalInterestPaymentWaiver;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalInterestRefund(BigDecimal totalInterestRefund) {
++            this.totalInterestRefund = totalInterestRefund;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder chargeOffReasonId(Long chargeOffReasonId) {
++            this.chargeOffReasonId = chargeOffReasonId;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder chargeOffReason(String chargeOffReason) {
++            this.chargeOffReason = chargeOffReason;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalUnpaidPayableDueInterest(BigDecimal totalUnpaidPayableDueInterest) {
++            this.totalUnpaidPayableDueInterest = totalUnpaidPayableDueInterest;
++            return this;
++        }
++
++        public LoanSummaryDataBuilder totalUnpaidPayableNotDueInterest(BigDecimal totalUnpaidPayableNotDueInterest) {
++            this.totalUnpaidPayableNotDueInterest = totalUnpaidPayableNotDueInterest;
++            return this;
++        }
++
++        public LoanSummaryData build() {
++            return new LoanSummaryData(currency, totalPrincipal, totalCapitalizedIncome, totalCapitalizedIncomeAdjustment,
++                    principalDisbursed, principalAdjustments, principalPaid, principalWrittenOff, principalOutstanding, principalOverdue,
++                    interestCharged, interestPaid, interestWaived, interestWrittenOff, interestOutstanding, interestOverdue,
++                    feeChargesCharged, feeAdjustments, feeChargesDueAtDisbursementCharged, feeChargesPaid, feeChargesWaived,
++                    feeChargesWrittenOff, feeChargesOutstanding, feeChargesOverdue, penaltyChargesCharged, penaltyAdjustments,
++                    penaltyChargesPaid, penaltyChargesWaived, penaltyChargesWrittenOff, penaltyChargesOutstanding, penaltyChargesOverdue,
++                    totalExpectedRepayment, totalRepayment, totalExpectedCostOfLoan, totalCostOfLoan, totalWaived, totalWrittenOff,
++                    totalOutstanding, totalOverdue, totalRecovered, overdueSinceDate, writeoffReasonId, writeoffReason,
++                    totalMerchantRefund, totalMerchantRefundReversed, totalPayoutRefund, totalPayoutRefundReversed, totalGoodwillCredit,
++                    totalGoodwillCreditReversed, totalChargeAdjustment, totalChargeAdjustmentReversed, totalChargeback,
++                    totalCreditBalanceRefund, totalCreditBalanceRefundReversed, totalRepaymentTransaction,
++                    totalRepaymentTransactionReversed, totalInterestPaymentWaiver, totalInterestRefund, chargeOffReasonId, chargeOffReason,
++                    totalUnpaidPayableDueInterest, totalUnpaidPayableNotDueInterest);
++        }
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalance.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalance.java
+index 0a3e5675d..1dc1194d6 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalance.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalance.java
+@@ -19,15 +19,12 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Data;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
+ 
+-@Data
+-public class LoanTransactionBalance {
+-
+-    private final LoanTransactionType transactionType;
+-    private final boolean reversed;
+-    private final boolean manuallyAdjustedOrReversed;
+-    private final BigDecimal amount;
+-
++public record LoanTransactionBalance(
++        LoanTransactionType transactionType,
++        boolean reversed,
++        boolean manuallyAdjustedOrReversed,
++        BigDecimal amount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalanceWithLoanId.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalanceWithLoanId.java
+index 94d5fb505..c64cea83f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalanceWithLoanId.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionBalanceWithLoanId.java
+@@ -19,10 +19,8 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Getter;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
+ 
+-@Getter
+ public class LoanTransactionBalanceWithLoanId extends LoanTransactionBalance {
+ 
+     private final Long loanId;
+@@ -32,4 +30,8 @@ public class LoanTransactionBalanceWithLoanId extends LoanTransactionBalance {
+         super(transactionType, reversed, manuallyAdjustedOrReversed, amount);
+         this.loanId = loanId;
+     }
++
++    public Long loanId() {
++        return this.loanId;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionData.java
+index c57af23d5..19421d0d0 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionData.java
+@@ -24,11 +24,6 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.Collection;
+ import java.util.List;
+-import lombok.AccessLevel;
+-import lombok.AllArgsConstructor;
+-import lombok.Builder;
+-import lombok.Getter;
+-import lombok.Setter;
+ import org.apache.fineract.infrastructure.codes.data.CodeValueData;
+ import org.apache.fineract.infrastructure.core.data.StringEnumOptionData;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+@@ -38,102 +33,211 @@ import org.apache.fineract.portfolio.common.domain.PeriodFrequencyType;
+ import org.apache.fineract.portfolio.paymentdetail.data.PaymentDetailData;
+ import org.apache.fineract.portfolio.paymenttype.data.PaymentTypeData;
+ 
+-/**
+- * Immutable data object representing a loan transaction.
+- */
+-@Getter
+-@Builder(builderClassName = "Builder")
+-@AllArgsConstructor(access = AccessLevel.PUBLIC)
+-public class LoanTransactionData implements Serializable {
++public record LoanTransactionData(
++        Long id,
++        Long loanId,
++        ExternalId externalLoanId,
++        Long officeId,
++        String officeName,
++        LoanTransactionEnumData type,
++        LocalDate date,
++        CurrencyData currency,
++        PaymentDetailData paymentDetailData,
++        BigDecimal amount,
++        BigDecimal netDisbursalAmount,
++        BigDecimal principalPortion,
++        BigDecimal interestPortion,
++        BigDecimal feeChargesPortion,
++        BigDecimal penaltyChargesPortion,
++        BigDecimal overpaymentPortion,
++        BigDecimal unrecognizedIncomePortion,
++        ExternalId externalId,
++        AccountTransferData transfer,
++        BigDecimal fixedEmiAmount,
++        BigDecimal outstandingLoanBalance,
++        LocalDate submittedOnDate,
++        boolean manuallyReversed,
++        LocalDate possibleNextRepaymentDate,
++        BigDecimal availableDisbursementAmountWithOverApplied,
++        Collection<LoanChargePaidByData> loanChargePaidByList,
++        Collection<PaymentTypeData> paymentTypeOptions,
++        Collection<CodeValueData> writeOffReasonOptions,
++        Integer numberOfRepayments,
++        Integer rowIndex,
++        String dateFormat,
++        String locale,
++        BigDecimal transactionAmount,
++        LocalDate transactionDate,
++        Long paymentTypeId,
++        String accountNumber,
++        Integer checkNumber,
++        Integer routingCode,
++        Integer receiptNumber,
++        Integer bankNumber,
++        Long accountId,
++        String transactionType,
++        List<LoanRepaymentScheduleInstallmentData> loanRepaymentScheduleInstallments,
++        ExternalId reversalExternalId,
++        LocalDate reversedOnDate,
++        List<LoanTransactionRelationData> transactionRelations,
++        Collection<CodeValueData> chargeOffReasonOptions,
++        Collection<CodeValueData> classificationOptions,
++        CodeValueData classification,
++        Collection<CodeValueData> reAgeReasonOptions,
++        Collection<PeriodFrequencyType> periodFrequencyOptions,
++        Collection<StringEnumOptionData> reAgeInterestHandlingOptions,
++        Collection<CodeValueData> reAmortizationReasonOptions,
++        Collection<StringEnumOptionData> reAmortizationInterestHandlingOptions,
++        Integer numberOfFutureInstallments,
++        Integer numberOfPastInstallments,
++        LocalDate nextInstallmentDueDate,
++        LocalDate calculatedStartDate
++) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private final Long id;
+-    private final Long loanId;
+-    private final ExternalId externalLoanId;
+-    private final Long officeId;
+-    private final String officeName;
+-
+-    private final LoanTransactionEnumData type;
+-
+-    private final LocalDate date;
+-
+-    private final CurrencyData currency;
+-    private final PaymentDetailData paymentDetailData;
+-
+-    private final BigDecimal amount;
+-    private final BigDecimal netDisbursalAmount;
+-    private final BigDecimal principalPortion;
+-    private final BigDecimal interestPortion;
+-    private final BigDecimal feeChargesPortion;
+-    private final BigDecimal penaltyChargesPortion;
+-    private final BigDecimal overpaymentPortion;
+-    private final BigDecimal unrecognizedIncomePortion;
+-    private final ExternalId externalId;
+-    private final AccountTransferData transfer;
+-    private final BigDecimal fixedEmiAmount;
+-    private final BigDecimal outstandingLoanBalance;
+-    private final LocalDate submittedOnDate;
+-    private final boolean manuallyReversed;
+-    private final LocalDate possibleNextRepaymentDate;
+-    private final BigDecimal availableDisbursementAmountWithOverApplied;
+-
+-    @Setter
+-    private Collection<LoanChargePaidByData> loanChargePaidByList;
+-
+-    // templates
+-    final Collection<PaymentTypeData> paymentTypeOptions;
+-
+-    private Collection<CodeValueData> writeOffReasonOptions = null;
+-
+-    @Setter
+-    private Integer numberOfRepayments = 0;
+-
+-    // import fields
+-    private transient Integer rowIndex;
+-    private String dateFormat;
+-    private String locale;
+-    private BigDecimal transactionAmount;
+-    private LocalDate transactionDate;
+-    private Long paymentTypeId;
+-    private String accountNumber;
+-    private Integer checkNumber;
+-    private Integer routingCode;
+-    private Integer receiptNumber;
+-    private Integer bankNumber;
+-    private transient Long accountId;
+-    private transient String transactionType;
+-    @Setter
+-    private List<LoanRepaymentScheduleInstallmentData> loanRepaymentScheduleInstallments;
+-
+-    // Reverse Data
+-    private final ExternalId reversalExternalId;
+-    private LocalDate reversedOnDate;
+-
+-    @Setter
+-    private List<LoanTransactionRelationData> transactionRelations;
++    public static LoanTransactionData.Builder builder() {
++        return new LoanTransactionData.Builder();
++    }
+ 
+-    private Collection<CodeValueData> chargeOffReasonOptions = null;
+-    private Collection<CodeValueData> classificationOptions = null;
+-    private CodeValueData classification;
++    public static class Builder {
++        private Long id;
++        private Long loanId;
++        private ExternalId externalLoanId = ExternalId.empty();
++        private Long officeId;
++        private String officeName;
++        private LoanTransactionEnumData type;
++        private LocalDate date;
++        private CurrencyData currency;
++        private PaymentDetailData paymentDetailData;
++        private BigDecimal amount;
++        private BigDecimal netDisbursalAmount;
++        private BigDecimal principalPortion;
++        private BigDecimal interestPortion;
++        private BigDecimal feeChargesPortion;
++        private BigDecimal penaltyChargesPortion;
++        private BigDecimal overpaymentPortion;
++        private BigDecimal unrecognizedIncomePortion;
++        private ExternalId externalId = ExternalId.empty();
++        private AccountTransferData transfer;
++        private BigDecimal fixedEmiAmount;
++        private BigDecimal outstandingLoanBalance;
++        private LocalDate submittedOnDate;
++        private boolean manuallyReversed = false;
++        private LocalDate possibleNextRepaymentDate;
++        private BigDecimal availableDisbursementAmountWithOverApplied;
++        private Collection<LoanChargePaidByData> loanChargePaidByList;
++        private Collection<PaymentTypeData> paymentTypeOptions;
++        private Collection<CodeValueData> writeOffReasonOptions;
++        private Integer numberOfRepayments = 0;
++        private Integer rowIndex;
++        private String dateFormat;
++        private String locale;
++        private BigDecimal transactionAmount;
++        private LocalDate transactionDate;
++        private Long paymentTypeId;
++        private String accountNumber;
++        private Integer checkNumber;
++        private Integer routingCode;
++        private Integer receiptNumber;
++        private Integer bankNumber;
++        private Long accountId;
++        private String transactionType;
++        private List<LoanRepaymentScheduleInstallmentData> loanRepaymentScheduleInstallments;
++        private ExternalId reversalExternalId = ExternalId.empty();
++        private LocalDate reversedOnDate;
++        private List<LoanTransactionRelationData> transactionRelations;
++        private Collection<CodeValueData> chargeOffReasonOptions;
++        private Collection<CodeValueData> classificationOptions;
++        private CodeValueData classification;
++        private Collection<CodeValueData> reAgeReasonOptions;
++        private Collection<PeriodFrequencyType> periodFrequencyOptions;
++        private Collection<StringEnumOptionData> reAgeInterestHandlingOptions;
++        private Collection<CodeValueData> reAmortizationReasonOptions;
++        private Collection<StringEnumOptionData> reAmortizationInterestHandlingOptions;
++        private Integer numberOfFutureInstallments;
++        private Integer numberOfPastInstallments;
++        private LocalDate nextInstallmentDueDate;
++        private LocalDate calculatedStartDate;
+ 
+-    private Collection<CodeValueData> reAgeReasonOptions = null;
+-    private Collection<PeriodFrequencyType> periodFrequencyOptions = null;
+-    private Collection<StringEnumOptionData> reAgeInterestHandlingOptions = null;
+-    private Collection<CodeValueData> reAmortizationReasonOptions = null;
+-    private Collection<StringEnumOptionData> reAmortizationInterestHandlingOptions = null;
++        public Builder id(Long id) { this.id = id; return this; }
++        public Builder loanId(Long loanId) { this.loanId = loanId; return this; }
++        public Builder externalLoanId(ExternalId externalLoanId) { this.externalLoanId = externalLoanId; return this; }
++        public Builder officeId(Long officeId) { this.officeId = officeId; return this; }
++        public Builder officeName(String officeName) { this.officeName = officeName; return this; }
++        public Builder type(LoanTransactionEnumData type) { this.type = type; return this; }
++        public Builder date(LocalDate date) { this.date = date; return this; }
++        public Builder currency(CurrencyData currency) { this.currency = currency; return this; }
++        public Builder paymentDetailData(PaymentDetailData paymentDetailData) { this.paymentDetailData = paymentDetailData; return this; }
++        public Builder amount(BigDecimal amount) { this.amount = amount; return this; }
++        public Builder netDisbursalAmount(BigDecimal netDisbursalAmount) { this.netDisbursalAmount = netDisbursalAmount; return this; }
++        public Builder principalPortion(BigDecimal principalPortion) { this.principalPortion = principalPortion; return this; }
++        public Builder interestPortion(BigDecimal interestPortion) { this.interestPortion = interestPortion; return this; }
++        public Builder feeChargesPortion(BigDecimal feeChargesPortion) { this.feeChargesPortion = feeChargesPortion; return this; }
++        public Builder penaltyChargesPortion(BigDecimal penaltyChargesPortion) { this.penaltyChargesPortion = penaltyChargesPortion; return this; }
++        public Builder overpaymentPortion(BigDecimal overpaymentPortion) { this.overpaymentPortion = overpaymentPortion; return this; }
++        public Builder unrecognizedIncomePortion(BigDecimal unrecognizedIncomePortion) { this.unrecognizedIncomePortion = unrecognizedIncomePortion; return this; }
++        public Builder externalId(ExternalId externalId) { this.externalId = externalId; return this; }
++        public Builder transfer(AccountTransferData transfer) { this.transfer = transfer; return this; }
++        public Builder fixedEmiAmount(BigDecimal fixedEmiAmount) { this.fixedEmiAmount = fixedEmiAmount; return this; }
++        public Builder outstandingLoanBalance(BigDecimal outstandingLoanBalance) { this.outstandingLoanBalance = outstandingLoanBalance; return this; }
++        public Builder submittedOnDate(LocalDate submittedOnDate) { this.submittedOnDate = submittedOnDate; return this; }
++        public Builder manuallyReversed(boolean manuallyReversed) { this.manuallyReversed = manuallyReversed; return this; }
++        public Builder possibleNextRepaymentDate(LocalDate possibleNextRepaymentDate) { this.possibleNextRepaymentDate = possibleNextRepaymentDate; return this; }
++        public Builder availableDisbursementAmountWithOverApplied(BigDecimal availableDisbursementAmountWithOverApplied) { this.availableDisbursementAmountWithOverApplied = availableDisbursementAmountWithOverApplied; return this; }
++        public Builder loanChargePaidByList(Collection<LoanChargePaidByData> loanChargePaidByList) { this.loanChargePaidByList = loanChargePaidByList; return this; }
++        public Builder paymentTypeOptions(Collection<PaymentTypeData> paymentTypeOptions) { this.paymentTypeOptions = paymentTypeOptions; return this; }
++        public Builder writeOffReasonOptions(Collection<CodeValueData> writeOffReasonOptions) { this.writeOffReasonOptions = writeOffReasonOptions; return this; }
++        public Builder numberOfRepayments(Integer numberOfRepayments) { this.numberOfRepayments = numberOfRepayments; return this; }
++        public Builder rowIndex(Integer rowIndex) { this.rowIndex = rowIndex; return this; }
++        public Builder dateFormat(String dateFormat) { this.dateFormat = dateFormat; return this; }
++        public Builder locale(String locale) { this.locale = locale; return this; }
++        public Builder transactionAmount(BigDecimal transactionAmount) { this.transactionAmount = transactionAmount; return this; }
++        public Builder transactionDate(LocalDate transactionDate) { this.transactionDate = transactionDate; return this; }
++        public Builder paymentTypeId(Long paymentTypeId) { this.paymentTypeId = paymentTypeId; return this; }
++        public Builder accountNumber(String accountNumber) { this.accountNumber = accountNumber; return this; }
++        public Builder checkNumber(Integer checkNumber) { this.checkNumber = checkNumber; return this; }
++        public Builder routingCode(Integer routingCode) { this.routingCode = routingCode; return this; }
++        public Builder receiptNumber(Integer receiptNumber) { this.receiptNumber = receiptNumber; return this; }
++        public Builder bankNumber(Integer bankNumber) { this.bankNumber = bankNumber; return this; }
++        public Builder accountId(Long accountId) { this.accountId = accountId; return this; }
++        public Builder transactionType(String transactionType) { this.transactionType = transactionType; return this; }
++        public Builder loanRepaymentScheduleInstallments(List<LoanRepaymentScheduleInstallmentData> loanRepaymentScheduleInstallments) { this.loanRepaymentScheduleInstallments = loanRepaymentScheduleInstallments; return this; }
++        public Builder reversalExternalId(ExternalId reversalExternalId) { this.reversalExternalId = reversalExternalId; return this; }
++        public Builder reversedOnDate(LocalDate reversedOnDate) { this.reversedOnDate = reversedOnDate; return this; }
++        public Builder transactionRelations(List<LoanTransactionRelationData> transactionRelations) { this.transactionRelations = transactionRelations; return this; }
++        public Builder chargeOffReasonOptions(Collection<CodeValueData> chargeOffReasonOptions) { this.chargeOffReasonOptions = chargeOffReasonOptions; return this; }
++        public Builder classificationOptions(Collection<CodeValueData> classificationOptions) { this.classificationOptions = classificationOptions; return this; }
++        public Builder classification(CodeValueData classification) { this.classification = classification; return this; }
++        public Builder reAgeReasonOptions(Collection<CodeValueData> reAgeReasonOptions) { this.reAgeReasonOptions = reAgeReasonOptions; return this; }
++        public Builder periodFrequencyOptions(Collection<PeriodFrequencyType> periodFrequencyOptions) { this.periodFrequencyOptions = periodFrequencyOptions; return this; }
++        public Builder reAgeInterestHandlingOptions(Collection<StringEnumOptionData> reAgeInterestHandlingOptions) { this.reAgeInterestHandlingOptions = reAgeInterestHandlingOptions; return this; }
++        public Builder reAmortizationReasonOptions(Collection<CodeValueData> reAmortizationReasonOptions) { this.reAmortizationReasonOptions = reAmortizationReasonOptions; return this; }
++        public Builder reAmortizationInterestHandlingOptions(Collection<StringEnumOptionData> reAmortizationInterestHandlingOptions) { this.reAmortizationInterestHandlingOptions = reAmortizationInterestHandlingOptions; return this; }
++        public Builder numberOfFutureInstallments(Integer numberOfFutureInstallments) { this.numberOfFutureInstallments = numberOfFutureInstallments; return this; }
++        public Builder numberOfPastInstallments(Integer numberOfPastInstallments) { this.numberOfPastInstallments = numberOfPastInstallments; return this; }
++        public Builder nextInstallmentDueDate(LocalDate nextInstallmentDueDate) { this.nextInstallmentDueDate = nextInstallmentDueDate; return this; }
++        public Builder calculatedStartDate(LocalDate calculatedStartDate) { this.calculatedStartDate = calculatedStartDate; return this; }
+ 
+-    private Integer numberOfFutureInstallments;
+-    private Integer numberOfPastInstallments;
+-    private LocalDate nextInstallmentDueDate;
+-    private LocalDate calculatedStartDate;
++        public LoanTransactionData build() {
++            return new LoanTransactionData(id, loanId, externalLoanId, officeId, officeName, type, date, currency, paymentDetailData,
++                    amount, netDisbursalAmount, principalPortion, interestPortion, feeChargesPortion, penaltyChargesPortion,
++                    overpaymentPortion, unrecognizedIncomePortion, externalId, transfer, fixedEmiAmount, outstandingLoanBalance,
++                    submittedOnDate, manuallyReversed, possibleNextRepaymentDate, availableDisbursementAmountWithOverApplied,
++                    loanChargePaidByList, paymentTypeOptions, writeOffReasonOptions, numberOfRepayments, rowIndex, dateFormat, locale,
++                    transactionAmount, transactionDate, paymentTypeId, accountNumber, checkNumber, routingCode, receiptNumber, bankNumber,
++                    accountId, transactionType, loanRepaymentScheduleInstallments, reversalExternalId, reversedOnDate,
++                    transactionRelations, chargeOffReasonOptions, classificationOptions, classification, reAgeReasonOptions,
++                    periodFrequencyOptions, reAgeInterestHandlingOptions, reAmortizationReasonOptions, reAmortizationInterestHandlingOptions,
++                    numberOfFutureInstallments, numberOfPastInstallments, nextInstallmentDueDate, calculatedStartDate);
++        }
++    }
+ 
+     public static LoanTransactionData importInstance(BigDecimal repaymentAmount, LocalDate lastRepaymentDate, Long repaymentTypeId,
+             Integer rowIndex, String locale, String dateFormat) {
+         return LoanTransactionData.builder().transactionAmount(repaymentAmount).transactionDate(lastRepaymentDate)
+-                .paymentTypeId(repaymentTypeId).rowIndex(rowIndex).locale(locale).dateFormat(dateFormat).externalLoanId(ExternalId.empty())
+-                .externalId(ExternalId.empty()).reversalExternalId(ExternalId.empty()).manuallyReversed(false).build();
++                .paymentTypeId(repaymentTypeId).rowIndex(rowIndex).locale(locale).dateFormat(dateFormat).build();
+     }
+ 
+     public static LoanTransactionData importInstance(BigDecimal repaymentAmount, LocalDate repaymentDate, Long repaymentTypeId,
+@@ -142,12 +246,11 @@ public class LoanTransactionData implements Serializable {
+         return LoanTransactionData.builder().transactionAmount(repaymentAmount).transactionDate(repaymentDate)
+                 .paymentTypeId(repaymentTypeId).accountNumber(accountNumber).checkNumber(checkNumber).routingCode(routingCode)
+                 .receiptNumber(receiptNumber).bankNumber(bankNumber).accountId(loanAccountId).transactionType(transactionType)
+-                .rowIndex(rowIndex).locale(locale).dateFormat(dateFormat).externalLoanId(ExternalId.empty()).externalId(ExternalId.empty())
+-                .reversalExternalId(ExternalId.empty()).manuallyReversed(false).build();
++                .rowIndex(rowIndex).locale(locale).dateFormat(dateFormat).build();
+     }
+ 
+-    public static LoanTransactionData templateOnTop(final LoanTransactionData loanTransactionData,
+-            final Collection<PaymentTypeData> paymentTypeOptions) {
++    public static LoanTransactionData templateOnTop(LoanTransactionData loanTransactionData,
++            Collection<PaymentTypeData> paymentTypeOptions) {
+         return builder().id(loanTransactionData.id).officeId(loanTransactionData.officeId).officeName(loanTransactionData.officeName)
+                 .type(loanTransactionData.type).paymentDetailData(loanTransactionData.paymentDetailData)
+                 .currency(loanTransactionData.currency).date(loanTransactionData.date).amount(loanTransactionData.amount)
+@@ -161,7 +264,7 @@ public class LoanTransactionData implements Serializable {
+                 .externalLoanId(loanTransactionData.externalLoanId).build();
+     }
+ 
+-    public static LoanTransactionData templateOnTop(final LoanTransactionData loanTransactionData, final LoanTransactionEnumData typeOf) {
++    public static LoanTransactionData templateOnTop(LoanTransactionData loanTransactionData, LoanTransactionEnumData typeOf) {
+         return builder().id(loanTransactionData.id).officeId(loanTransactionData.officeId).officeName(loanTransactionData.officeName)
+                 .type(typeOf).paymentDetailData(loanTransactionData.paymentDetailData).currency(loanTransactionData.currency)
+                 .date(loanTransactionData.date).amount(loanTransactionData.amount)
+@@ -175,23 +278,20 @@ public class LoanTransactionData implements Serializable {
+                 .loanId(loanTransactionData.loanId).externalLoanId(loanTransactionData.externalLoanId).build();
+     }
+ 
+-    public static LoanTransactionData loanTransactionDataForCreditTemplate(final LoanTransactionEnumData transactionType,
+-            final LocalDate transactionDate, final BigDecimal transactionAmount, final Collection<PaymentTypeData> paymentOptions,
+-            final CurrencyData currency, List<CodeValueData> classificationOptions) {
++    public static LoanTransactionData loanTransactionDataForCreditTemplate(LoanTransactionEnumData transactionType,
++            LocalDate transactionDate, BigDecimal transactionAmount, Collection<PaymentTypeData> paymentOptions,
++            CurrencyData currency, List<CodeValueData> classificationOptions) {
+         return builder().type(transactionType).date(transactionDate).amount(transactionAmount).paymentTypeOptions(paymentOptions)
+-                .currency(currency).externalLoanId(ExternalId.empty()).externalId(ExternalId.empty()).reversalExternalId(ExternalId.empty())
+-                .manuallyReversed(false).classificationOptions(classificationOptions).build();
++                .currency(currency).classificationOptions(classificationOptions).build();
+     }
+ 
+-    public static LoanTransactionData loanTransactionDataForDisbursalTemplate(final LoanTransactionEnumData transactionType,
+-            final LocalDate expectedDisbursedOnLocalDateForTemplate, final BigDecimal disburseAmountForTemplate,
+-            final BigDecimal netDisbursalAmount, final Collection<PaymentTypeData> paymentOptions, final BigDecimal fixedEmiAmount,
+-            final LocalDate possibleNextRepaymentDate, final CurrencyData currency,
+-            final BigDecimal availableDisbursementAmountWithOverApplied) {
++    public static LoanTransactionData loanTransactionDataForDisbursalTemplate(LoanTransactionEnumData transactionType,
++            LocalDate expectedDisbursedOnLocalDateForTemplate, BigDecimal disburseAmountForTemplate,
++            BigDecimal netDisbursalAmount, Collection<PaymentTypeData> paymentOptions, BigDecimal fixedEmiAmount,
++            LocalDate possibleNextRepaymentDate, CurrencyData currency, BigDecimal availableDisbursementAmountWithOverApplied) {
+         return builder().type(transactionType).date(expectedDisbursedOnLocalDateForTemplate).amount(disburseAmountForTemplate)
+                 .netDisbursalAmount(netDisbursalAmount).paymentTypeOptions(paymentOptions).fixedEmiAmount(fixedEmiAmount)
+                 .possibleNextRepaymentDate(possibleNextRepaymentDate).currency(currency)
+-                .availableDisbursementAmountWithOverApplied(availableDisbursementAmountWithOverApplied).externalLoanId(ExternalId.empty())
+-                .externalId(ExternalId.empty()).reversalExternalId(ExternalId.empty()).manuallyReversed(false).build();
++                .availableDisbursementAmountWithOverApplied(availableDisbursementAmountWithOverApplied).build();
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionRelationData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionRelationData.java
+index cba5bbe74..5d55f6bf2 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionRelationData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanTransactionRelationData.java
+@@ -20,21 +20,14 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+-import lombok.Setter;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionRelationTypeEnum;
+ 
+-@Getter
+-@Setter
+-@AllArgsConstructor
+-public class LoanTransactionRelationData implements Serializable {
+-
+-    private Long fromLoanTransaction;
+-    private Long toLoanTransaction;
+-    private Long toLoanCharge;
+-    private LoanTransactionRelationTypeEnum relationType;
+-    private BigDecimal amount;
+-    private String paymentType;
+-
++public record LoanTransactionRelationData(
++        Long fromLoanTransaction,
++        Long toLoanTransaction,
++        Long toLoanCharge,
++        LoanTransactionRelationTypeEnum relationType,
++        BigDecimal amount,
++        String paymentType
++) implements Serializable {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+index be643496f..66bb4bc4c 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+@@ -19,13 +19,8 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Getter;
+-import lombok.RequiredArgsConstructor;
+-
+-@Getter
+-@RequiredArgsConstructor
+-public class PaidInAdvanceData {
+-
+-    private final BigDecimal paidInAdvance;
+ 
++public record PaidInAdvanceData(
++        BigDecimal paidInAdvance
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/TransactionChangeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/TransactionChangeData.java
+index 66b29c0a2..95474a3be 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/TransactionChangeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/TransactionChangeData.java
+@@ -18,19 +18,13 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+-import lombok.Setter;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransaction;
+ 
+ /**
+  * Represents a transaction change, storing both the old reversed transaction (if any) and the new transaction.
+  */
+-@Getter
+-@Setter
+-@AllArgsConstructor
+-public class TransactionChangeData {
+-
+-    private LoanTransaction oldTransaction;
+-    private LoanTransaction newTransaction;
++public record TransactionChangeData(
++        LoanTransaction oldTransaction,
++        LoanTransaction newTransaction
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+index 6e9ede09b..8ae6e2fc6 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+@@ -20,22 +20,18 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.util.Objects;
+-import lombok.Getter;
+ 
+-/**
+- * Immutable data object representing the total unpaid charge details
+- */
+-@Getter
+-public class UnpaidChargeData {
++public record UnpaidChargeData(
++        Long chargeId,
++        String chargeName,
++        BigDecimal outstandingAmount
++) {
+ 
+     private static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed";
+-    private final Long chargeId;
+-    private final String chargeName;
+-    private final BigDecimal outstandingAmount;
+ 
+-    public UnpaidChargeData(Long chargeId, String chargeName, BigDecimal outstandingAmount) {
+-        this.chargeId = Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.chargeName = Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.outstandingAmount = Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
++    public UnpaidChargeData {
++        Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
+     }
+ }

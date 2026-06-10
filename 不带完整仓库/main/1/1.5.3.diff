@@ -1,0 +1,541 @@
+diff --git a/delinquency-fix.diff b/delinquency-fix.diff
+new file mode 100644
+index 000000000..8bf0ab28b
+--- /dev/null
++++ b/delinquency-fix.diff
+@@ -0,0 +1,268 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2024
++From: Fix <fix@apache.fineract>
++Date: Mon Jun 08 2026
++Subject: [PATCH] Fix overdue days calculation to exclude non-working days (holidays/weekends)
++
++---
++
++Problem:
++The overdue days calculation in LoanDelinquencyDomainServiceImpl used calendar days
++(DateUtils.getDifferenceInDays) without subtracting non-working days (weekends and holidays).
++This caused the system to report more delinquent days than actually applicable when
++weekends/holidays fell within the overdue period.
++
++Solution:
++Introduced a new service DelinquencyNonWorkingDaysService that counts the number of
++non-working days (holidays + weekends) between the overdue start date and the business date.
++The overdue days calculation now subtracts these non-working days, so delinquent days
++reflect only actual working days.
++
++Files changed:
++1. DelinquencyNonWorkingDaysService.java (interface) - added officeId parameter
++2. DelinquencyNonWorkingDaysServiceImpl.java (new implementation in fineract-provider)
++3. LoanDelinquencyDomainServiceImpl.java - integrated non-working day counting
++4. DelinquencyConfiguration.java - wired new dependency
++5. LoanDelinquencyDomainServiceTest.java - updated to mock new dependency
++
++---
++
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java
++index 1111111..2222222 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java
++@@ -22,5 +22,5 @@ package org.apache.fineract.portfolio.delinquency.service;
++
++ public interface DelinquencyNonWorkingDaysService {
++
++-    long countNonWorkingDays(LocalDate fromDate, LocalDate toDate);
+++    long countNonWorkingDays(Long officeId, LocalDate fromDate, LocalDate toDate);
++ }
++
++diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java
++new file mode 100644
++index 0000000..3333333
++--- /dev/null
+++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java
++@@ -0,0 +1,57 @@
+++/**
+++ * Licensed to the Apache Software Foundation (ASF) under one
+++ * or more contributor license agreements. See the NOTICE file
+++ * distributed with this work for additional information
+++ * regarding copyright ownership. The ASF licenses this file
+++ * to you under the Apache License, Version 2.0 (the
+++ * "License"); you may not use this file except in compliance
+++ * with the License. You may obtain a copy of the License at
+++ *
+++ * http://www.apache.org/licenses/LICENSE-2.0
+++ *
+++ * Unless required by applicable law or agreed to in writing,
+++ * software distributed under the License is distributed on an
+++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+++ * KIND, either express or implied. See the License for the
+++ * specific language governing permissions and limitations
+++ * under the License.
+++ */
+++package org.apache.fineract.portfolio.delinquency.service;
+++
+++import java.time.LocalDate;
+++import lombok.RequiredArgsConstructor;
+++import org.apache.fineract.organisation.holiday.domain.HolidayRepositoryWrapper;
+++import org.apache.fineract.organisation.workingdays.domain.WorkingDaysRepositoryWrapper;
+++import org.springframework.stereotype.Service;
+++
+++@Service
+++@RequiredArgsConstructor
+++public class DelinquencyNonWorkingDaysServiceImpl implements DelinquencyNonWorkingDaysService {
+++
+++    private final HolidayRepositoryWrapper holidayRepositoryWrapper;
+++    private final WorkingDaysRepositoryWrapper workingDaysRepositoryWrapper;
+++
+++    @Override
+++    public long countNonWorkingDays(Long officeId, LocalDate fromDate, LocalDate toDate) {
+++        if (fromDate == null || toDate == null) {
+++            return 0L;
+++        }
+++        long count = 0;
+++        LocalDate date = fromDate;
+++        while (!date.isAfter(toDate)) {
+++            boolean isHoliday = holidayRepositoryWrapper.isHoliday(officeId, date);
+++            boolean isWorkingDay = workingDaysRepositoryWrapper.isWorkingDay(date);
+++            if (isHoliday || !isWorkingDay) {
+++                count++;
+++            }
+++            date = date.plusDays(1);
+++        }
+++        return count;
+++    }
+++}
++
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++index 4444444..5555555 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++@@ -44,6 +44,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++
++     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
++     private final LoanTransactionReadService loanTransactionReadService;
+++    private final DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService;
++
++     @Override
++     @Transactional(readOnly = true)
++@@ -119,13 +120,15 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++         log.debug("Loan id {} with overdue since date {} and outstanding amount {}", loan.getId(), overdueSinceDate, outstandingAmount);
++
++         long overdueDays = 0L;
+++        long nonWorkingDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++             if (overdueDays < 0) {
++                 overdueDays = 0L;
++             }
+++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++             LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
++@@ -136,7 +139,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++         collectionData.setDelinquentPenalty(delinquentPenalty);
++
++         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, nonWorkingDays);
++
++         log.debug("Result: {}", collectionData);
++         return collectionData;
++@@ -199,13 +202,15 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++         log.debug("Loan id {} with overdue since date {} and outstanding amount {}", loan.getId(), overdueSinceDate, outstandingAmount);
++
++         long overdueDays = 0L;
+++        long nonWorkingDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++             if (overdueDays < 0) {
++                 overdueDays = 0L;
++             }
+++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++             LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
++@@ -213,7 +218,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++         }
++         collectionData.setDelinquentAmount(outstandingAmount);
++         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, nonWorkingDays);
++         return new LoanDelinquencyData(collectionData, loanInstallmentsCollectionData);
++     }
++
++@@ -241,13 +246,15 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++
++         // Grace days are not considered for installment level delinquency calculation currently.
++         long overdueDays = 0L;
+++        long nonWorkingDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++             if (overdueDays < 0) {
++                 overdueDays = 0L;
++             }
+++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++             collectionData.setDelinquentDate(overdueSinceDate);
++@@ -255,7 +262,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++         collectionData.setDelinquentAmount(outstandingAmount);
++         calculateAndSetDelinquentDays(collectionData, overdueDays, 0, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, nonWorkingDays);
++         return collectionData;
++
++     }
++@@ -355,13 +362,14 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
++
++     private void calculateAndSetDelinquentDays(CollectionData collectionData, long overdueDays, Integer graceDays,
++-            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate) {
+++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
+++            long nonWorkingDays) {
++         collectionData.setDelinquentDays(0L);
++         if (overdueDays > 0) {
++             Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
++                     businessDate);
++             if (pausedDays == null) {
++                 pausedDays = 0L;
++             }
++-            final long delinquentDays = overdueDays - pausedDays - graceDays;
+++            final long delinquentDays = overdueDays - nonWorkingDays - pausedDays - graceDays;
++             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
++         }
++     }
++
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++index 6666666..7777777 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++@@ -33,6 +33,7 @@ import org.apache.fineract.portfolio.delinquency.mapper.DelinquencyBucketMapper;
++ import org.apache.fineract.portfolio.delinquency.mapper.DelinquencyRangeMapper;
++ import org.apache.fineract.portfolio.delinquency.mapper.LoanDelinquencyTagMapper;
+++import org.apache.fineract.portfolio.delinquency.service.DelinquencyNonWorkingDaysService;
++ import org.apache.fineract.portfolio.delinquency.service.DelinquencyReadPlatformService;
++ import org.apache.fineract.portfolio.delinquency.service.DelinquencyReadPlatformServiceImpl;
++ import org.apache.fineract.portfolio.delinquency.service.DelinquencyWritePlatformService;
++@@ -99,7 +101,8 @@ public class DelinquencyConfiguration {
++
++     @Bean
++     @ConditionalOnMissingBean(LoanDelinquencyDomainService.class)
++     public LoanDelinquencyDomainService loanDelinquencyDomainService(DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper,
++-            LoanTransactionReadService loanTransactionReadService) {
++-        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService);
+++            LoanTransactionReadService loanTransactionReadService,
+++            DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService) {
+++        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService,
+++                delinquencyNonWorkingDaysService);
++     }
++ }
++
++diff --git a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++index 8888888..9999999 100644
++--- a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+++++ b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++@@ -47,6 +47,7 @@ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePaus
++ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelperImpl;
+++import org.apache.fineract.portfolio.delinquency.service.DelinquencyNonWorkingDaysService;
++ import org.apache.fineract.portfolio.delinquency.service.LoanDelinquencyDomainServiceImpl;
++ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
++
++@@ -92,6 +93,9 @@ public class LoanDelinquencyDomainServiceTest {
++     private LoanTransactionReadService loanTransactionReadService;
++
+++    @Mock
+++    private DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService;
+++
++     private LocalDate businessDate;
++     private MonetaryCurrency currency;
++
++@@ -110,6 +114,8 @@ public class LoanDelinquencyDomainServiceTest {
++         currency = new MonetaryCurrency("USD", 2, null);
++
+++        when(delinquencyNonWorkingDaysService.countNonWorkingDays(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(0L);
+++
++         moneyHelperStatic = Mockito.mockStatic(MoneyHelper.class);
++         moneyHelperStatic.when(MoneyHelper::getMathContext).thenReturn(new MathContext(12, RoundingMode.UP));
++         moneyHelperStatic.when(MoneyHelper::getRoundingMode).thenReturn(RoundingMode.UP);
++@@ -360,7 +366,7 @@ public class LoanDelinquencyDomainServiceTest {
++
++         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
++-                loanTransactionReadService);
+++                loanTransactionReadService, delinquencyNonWorkingDaysService);
++
++         LoanDelinquencyData collectionData = service.getLoanDelinquencyData(loan, effectiveDelinquencyList);
++
++@@ -416,7 +422,7 @@ public class LoanDelinquencyDomainServiceTest {
++                 .calculateEffectiveDelinquencyList(List.of(pauseAction));
++
++         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
++-                loanTransactionReadService);
+++                loanTransactionReadService, delinquencyNonWorkingDaysService);
++
++         LoanDelinquencyData delinquencyData = service.getLoanDelinquencyData(localLoan, effectiveDelinquencyList);
+\ No newline at end of file
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java
+new file mode 100644
+index 000000000..d9201767b
+--- /dev/null
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysService.java
+@@ -0,0 +1,26 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements. See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership. The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied. See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.fineract.portfolio.delinquency.service;
++
++import java.time.LocalDate;
++
++public interface DelinquencyNonWorkingDaysService {
++
++    long countNonWorkingDays(Long officeId, LocalDate fromDate, LocalDate toDate);
++}
+\ No newline at end of file
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+index 53d3f244d..5266ad993 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+@@ -45,6 +45,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+ 
+     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
+     private final LoanTransactionReadService loanTransactionReadService;
++    private final DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService;
+ 
+     @Override
+     @Transactional(readOnly = true)
+@@ -119,12 +120,14 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         log.debug("Loan id {} with overdue since date {} and outstanding amount {}", loan.getId(), overdueSinceDate, outstandingAmount);
+ 
+         long overdueDays = 0L;
++        long nonWorkingDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+             if (overdueDays < 0) {
+                 overdueDays = 0L;
+             }
++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+             LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
+@@ -137,7 +140,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         collectionData.setDelinquentPenalty(delinquentPenalty);
+ 
+         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, nonWorkingDays);
+ 
+         log.debug("Result: {}", collectionData);
+         return collectionData;
+@@ -199,12 +202,14 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         log.debug("Loan id {} with overdue since date {} and outstanding amount {}", loan.getId(), overdueSinceDate, outstandingAmount);
+ 
+         long overdueDays = 0L;
++        long nonWorkingDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+             if (overdueDays < 0) {
+                 overdueDays = 0L;
+             }
++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+             LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
+@@ -212,7 +217,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         }
+         collectionData.setDelinquentAmount(outstandingAmount);
+         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, nonWorkingDays);
+         return new LoanDelinquencyData(collectionData, loanInstallmentsCollectionData);
+     }
+ 
+@@ -239,19 +244,21 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+ 
+         // Grace days are not considered for installment level delinquency calculation currently.
+         long overdueDays = 0L;
++        long nonWorkingDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+             overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+             if (overdueDays < 0) {
+                 overdueDays = 0L;
+             }
++            nonWorkingDays = delinquencyNonWorkingDaysService.countNonWorkingDays(loan.getOfficeId(), overdueSinceDate, businessDate);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+             collectionData.setDelinquentDate(overdueSinceDate);
+         }
+         collectionData.setDelinquentAmount(outstandingAmount);
+         calculateAndSetDelinquentDays(collectionData, overdueDays, 0, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, nonWorkingDays);
+         return collectionData;
+ 
+     }
+@@ -347,7 +354,8 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+     }
+ 
+     private void calculateAndSetDelinquentDays(CollectionData collectionData, long overdueDays, Integer graceDays,
+-            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate) {
++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
++            long nonWorkingDays) {
+         collectionData.setDelinquentDays(0L);
+         if (overdueDays > 0) {
+             Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
+@@ -355,7 +363,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+             if (pausedDays == null) {
+                 pausedDays = 0L;
+             }
+-            final long delinquentDays = overdueDays - pausedDays - graceDays;
++            final long delinquentDays = overdueDays - nonWorkingDays - pausedDays - graceDays;
+             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
+         }
+     }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+index ee5f725b6..1518ab2a2 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+@@ -32,6 +32,7 @@ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePaus
+ import org.apache.fineract.portfolio.delinquency.mapper.DelinquencyBucketMapper;
+ import org.apache.fineract.portfolio.delinquency.mapper.DelinquencyRangeMapper;
+ import org.apache.fineract.portfolio.delinquency.mapper.LoanDelinquencyTagMapper;
++import org.apache.fineract.portfolio.delinquency.service.DelinquencyNonWorkingDaysService;
+ import org.apache.fineract.portfolio.delinquency.service.DelinquencyReadPlatformService;
+ import org.apache.fineract.portfolio.delinquency.service.DelinquencyReadPlatformServiceImpl;
+ import org.apache.fineract.portfolio.delinquency.service.DelinquencyWritePlatformService;
+@@ -100,7 +101,9 @@ public class DelinquencyConfiguration {
+     @Bean
+     @ConditionalOnMissingBean(LoanDelinquencyDomainService.class)
+     public LoanDelinquencyDomainService loanDelinquencyDomainService(DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper,
+-            LoanTransactionReadService loanTransactionReadService) {
+-        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService);
++            LoanTransactionReadService loanTransactionReadService,
++            DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService) {
++        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService,
++                delinquencyNonWorkingDaysService);
+     }
+ }
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java
+new file mode 100644
+index 000000000..3543faffb
+--- /dev/null
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyNonWorkingDaysServiceImpl.java
+@@ -0,0 +1,51 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements. See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership. The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied. See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.fineract.portfolio.delinquency.service;
++
++import java.time.LocalDate;
++import lombok.RequiredArgsConstructor;
++import org.apache.fineract.organisation.holiday.domain.HolidayRepositoryWrapper;
++import org.apache.fineract.organisation.workingdays.domain.WorkingDaysRepositoryWrapper;
++import org.springframework.stereotype.Service;
++
++@Service
++@RequiredArgsConstructor
++public class DelinquencyNonWorkingDaysServiceImpl implements DelinquencyNonWorkingDaysService {
++
++    private final HolidayRepositoryWrapper holidayRepositoryWrapper;
++    private final WorkingDaysRepositoryWrapper workingDaysRepositoryWrapper;
++
++    @Override
++    public long countNonWorkingDays(Long officeId, LocalDate fromDate, LocalDate toDate) {
++        if (fromDate == null || toDate == null) {
++            return 0L;
++        }
++        long count = 0;
++        LocalDate date = fromDate;
++        while (!date.isAfter(toDate)) {
++            boolean isHoliday = holidayRepositoryWrapper.isHoliday(officeId, date);
++            boolean isWorkingDay = workingDaysRepositoryWrapper.isWorkingDay(date);
++            if (isHoliday || !isWorkingDay) {
++                count++;
++            }
++            date = date.plusDays(1);
++        }
++        return count;
++    }
++}
+\ No newline at end of file
+diff --git a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+index 112d9b984..664c1ae27 100644
+--- a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++++ b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+@@ -46,6 +46,7 @@ import org.apache.fineract.portfolio.delinquency.domain.DelinquencyAction;
+ import org.apache.fineract.portfolio.delinquency.domain.LoanDelinquencyAction;
+ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
+ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelperImpl;
++import org.apache.fineract.portfolio.delinquency.service.DelinquencyNonWorkingDaysService;
+ import org.apache.fineract.portfolio.delinquency.service.LoanDelinquencyDomainServiceImpl;
+ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+@@ -90,6 +91,9 @@ public class LoanDelinquencyDomainServiceTest {
+     @Mock
+     private LoanTransactionReadService loanTransactionReadService;
+ 
++    @Mock
++    private DelinquencyNonWorkingDaysService delinquencyNonWorkingDaysService;
++
+     private LocalDate businessDate;
+     private MonetaryCurrency currency;
+     private MockedStatic<MoneyHelper> moneyHelperStatic;
+@@ -107,6 +111,8 @@ public class LoanDelinquencyDomainServiceTest {
+         businessDate = DateUtils.getBusinessLocalDate();
+         currency = new MonetaryCurrency("USD", 2, null);
+ 
++        when(delinquencyNonWorkingDaysService.countNonWorkingDays(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(0L);
++
+         moneyHelperStatic = Mockito.mockStatic(MoneyHelper.class);
+         moneyHelperStatic.when(MoneyHelper::getMathContext).thenReturn(new MathContext(12, RoundingMode.UP));
+         moneyHelperStatic.when(MoneyHelper::getRoundingMode).thenReturn(RoundingMode.UP);
+@@ -353,7 +359,7 @@ public class LoanDelinquencyDomainServiceTest {
+         List<LoanDelinquencyActionData> effectiveDelinquencyList = List.of(pauseData);
+ 
+         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
+-                loanTransactionReadService);
++                loanTransactionReadService, delinquencyNonWorkingDaysService);
+ 
+         LoanDelinquencyData collectionData = service.getLoanDelinquencyData(loan, effectiveDelinquencyList);
+ 
+@@ -409,7 +415,7 @@ public class LoanDelinquencyDomainServiceTest {
+                 .calculateEffectiveDelinquencyList(List.of(pauseAction));
+ 
+         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
+-                loanTransactionReadService);
++                loanTransactionReadService, delinquencyNonWorkingDaysService);
+ 
+         LoanDelinquencyData delinquencyData = service.getLoanDelinquencyData(localLoan, effectiveDelinquencyList);
+ 

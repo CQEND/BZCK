@@ -1,0 +1,68 @@
+diff --git a/drf_spectacular/openapi.py b/drf_spectacular/openapi.py
+index d6a8bc3..8d1dd71 100644
+--- a/drf_spectacular/openapi.py
++++ b/drf_spectacular/openapi.py
+@@ -371,11 +371,11 @@ class AutoSchema(ViewInspector):
+ 
+     def get_request_serializer(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_serializer_by_direction('request')
+ 
+     def get_response_serializers(self) -> Optional[_SerializerType]:
+         """ override this for custom behaviour """
+-        return self._get_serializer()
++        return self._get_serializer_by_direction('response')
+ 
+     def get_tags(self) -> List[str]:
+         """ override this for custom behaviour """
+@@ -1204,19 +1204,34 @@ class AutoSchema(ViewInspector):
+             if use_renderer(r) and hasattr(r, attribute)
+         ]))
+ 
+-    def _get_serializer(self):
++    def _get_serializer_by_direction(
++            self,
++            direction: Direction,
++            **kwargs: Any,
++    ) -> Optional[_SerializerType]:
++        """
++        Shared helper to retrieve the serializer based on the direction.
++
++        Determines the appropriate serializer by inspecting the view's attributes
++        (e.g. ``serializer_class``, ``get_serializer()``, ``get_serializer_class()``)
++        and gracefully handles edge cases for both ``GenericAPIView`` and ``APIView``.
++
++        The ``direction`` parameter (``'request'`` or ``'response'``) is provided
++        to enable direction-specific overrides in subclasses that wish to return
++        different serializers for reading vs. writing operations.
++
++        :param direction: ``'request'`` or ``'response'``.
++        :param kwargs: reserved for future extension.
++        :return: a serializer instance or class, or ``None`` if undetermined.
++        """
+         view = self.view
+         context = build_serializer_context(view)
+         try:
+             if isinstance(view, GenericAPIView):
+-                # try to circumvent queryset issues with calling get_serializer. if view has NOT
+-                # overridden get_serializer, its safe to use get_serializer_class.
+                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
+                     return view.get_serializer_class()(context=context)
+                 return view.get_serializer(context=context)
+             elif isinstance(view, APIView):
+-                # APIView does not implement the required interface, but be lenient and make
+-                # good guesses before giving up and emitting a warning.
+                 if callable(getattr(view, 'get_serializer', None)):
+                     return view.get_serializer(context=context)
+                 elif callable(getattr(view, 'get_serializer_class', None)):
+@@ -1238,6 +1253,9 @@ class AutoSchema(ViewInspector):
+                 f'a request? Ignoring the view for now. (Exception: {exc})'
+             )
+ 
++    def _get_serializer(self):
++        return self._get_serializer_by_direction('request')
++
+     def get_examples(self) -> List[OpenApiExample]:
+         """ override this for custom behaviour """
+         return []

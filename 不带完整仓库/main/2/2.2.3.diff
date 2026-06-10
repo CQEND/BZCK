@@ -1,0 +1,164 @@
+diff --git a/drf_spectacular/views.py b/drf_spectacular/views.py
+index c81a4b3..ed5dbac 100644
+--- a/drf_spectacular/views.py
++++ b/drf_spectacular/views.py
+@@ -1,9 +1,14 @@
++import hashlib
+ import json
++import os
+ from collections import namedtuple
++from datetime import datetime, timezone
++from email.utils import formatdate, parsedate_to_datetime
+ from importlib import import_module
+ from typing import Any, Dict, List, Optional, Type
+ 
+ from django.conf import settings
++from django.http import HttpResponse
+ from django.templatetags.static import static
+ from django.utils import translation
+ from django.utils.translation import gettext_lazy as _
+@@ -60,8 +65,49 @@ class SpectacularAPIView(APIView):
+     custom_settings: Optional[Dict[str, Any]] = None
+     patterns: Optional[List[Any]] = None
+ 
++    def _get_schema_last_modified(self):
++        candidate_paths = [
++            os.path.join(os.path.dirname(__file__), '..', 'pyproject.toml'),
++            os.path.join(os.getcwd(), 'pyproject.toml'),
++        ]
++        for candidate in candidate_paths:
++            abs_path = os.path.abspath(candidate)
++            if os.path.isfile(abs_path):
++                base_mtime = os.path.getmtime(abs_path)
++                break
++        else:
++            base_mtime = 0
++
++        settings_hash_input = json.dumps({
++            'VERSION': spectacular_settings.VERSION,
++            'TITLE': spectacular_settings.TITLE,
++            'DESCRIPTION': spectacular_settings.DESCRIPTION,
++            'TOS': spectacular_settings.TOS,
++            'CONTACT': spectacular_settings.CONTACT,
++            'LICENSE': spectacular_settings.LICENSE,
++            'OAS_VERSION': spectacular_settings.OAS_VERSION,
++            'SERVERS': spectacular_settings.SERVERS,
++            'TAGS': spectacular_settings.TAGS,
++            'EXTERNAL_DOCS': spectacular_settings.EXTERNAL_DOCS,
++            'EXTENSIONS_INFO': spectacular_settings.EXTENSIONS_INFO,
++            'EXTENSIONS_ROOT': spectacular_settings.EXTENSIONS_ROOT,
++        }, sort_keys=True, default=str).encode()
++        settings_hash = int(hashlib.md5(settings_hash_input).hexdigest()[:8], 16)
++        hash_seconds = settings_hash % 86400
++
++        return datetime.fromtimestamp(base_mtime + hash_seconds, tz=timezone.utc)
++
+     @extend_schema(**SCHEMA_KWARGS)
+     def get(self, request, *args, **kwargs):
++        if 'HTTP_IF_MODIFIED_SINCE' in request.META:
++            last_modified = self._get_schema_last_modified()
++            try:
++                if_modified_since = parsedate_to_datetime(request.META['HTTP_IF_MODIFIED_SINCE'])
++            except (ValueError, TypeError):
++                if_modified_since = None
++            if if_modified_since is not None and last_modified <= if_modified_since:
++                return HttpResponse(status=304)
++
+         # special handling of custom urlconf parameter
+         if isinstance(self.urlconf, list) or isinstance(self.urlconf, tuple):
+             ModuleWrapper = namedtuple('ModuleWrapper', ['urlpatterns'])
+@@ -90,7 +136,10 @@ class SpectacularAPIView(APIView):
+         generator = self.generator_class(urlconf=self.urlconf, api_version=version, patterns=self.patterns)
+         return Response(
+             data=generator.get_schema(request=request, public=self.serve_public),
+-            headers={"Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"'}
++            headers={
++                "Content-Disposition": f'inline; filename="{self._get_filename(request, version)}"',
++                "Last-Modified": formatdate(self._get_schema_last_modified().timestamp(), usegmt=True),
++            }
+         )
+ 
+     def _get_filename(self, request, version):
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 3bf063d..631893e 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -52,6 +52,8 @@ def pytest_configure(config):
+ 
+     settings.configure(
+         DEBUG_PROPAGATE_EXCEPTIONS=True,
++        DEBUG=True,
++        ALLOWED_HOSTS=['testserver'],
+         DATABASES={'default': {
+             'ENGINE': 'django.db.backends.sqlite3',
+             'NAME': ':memory:'
+diff --git a/tests/test_view.py b/tests/test_view.py
+index 414e849..f5522d3 100644
+--- a/tests/test_view.py
++++ b/tests/test_view.py
+@@ -194,3 +194,65 @@ def test_swagger_oauth_redirect_view(get_params):
+     else:
+         assert response.headers['Location'] ==\
+                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
++
++
++@pytest.mark.urls(__name__)
++@mock.patch.object(SpectacularAPIView, '_get_schema_last_modified')
++def test_spectacular_view_last_modified_header(mock_last_modified, no_warnings):
++    from datetime import datetime, timezone
++    from email.utils import formatdate
++
++    mock_dt = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
++    mock_last_modified.return_value = mock_dt
++
++    response = APIClient().get('/api/v1/schema/')
++    assert response.status_code == 200
++    assert 'Last-Modified' in response.headers
++    assert response.headers['Last-Modified'] == formatdate(mock_dt.timestamp(), usegmt=True)
++
++
++@pytest.mark.urls(__name__)
++@mock.patch.object(SpectacularAPIView, '_get_schema_last_modified')
++def test_spectacular_view_not_modified(mock_last_modified, no_warnings):
++    from datetime import datetime, timedelta, timezone
++    from email.utils import formatdate
++
++    mock_dt = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
++    mock_last_modified.return_value = mock_dt
++
++    response = APIClient().get(
++        '/api/v1/schema/',
++        HTTP_IF_MODIFIED_SINCE=formatdate(mock_dt.timestamp(), usegmt=True),
++    )
++    assert response.status_code == 304
++    assert not response.content
++
++
++@pytest.mark.urls(__name__)
++@mock.patch.object(SpectacularAPIView, '_get_schema_last_modified')
++def test_spectacular_view_modified_since_earlier(mock_last_modified, no_warnings):
++    from datetime import datetime, timedelta, timezone
++    from email.utils import formatdate
++
++    mock_dt = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
++    mock_last_modified.return_value = mock_dt
++
++    earlier = mock_dt - timedelta(hours=1)
++    response = APIClient().get(
++        '/api/v1/schema/',
++        HTTP_IF_MODIFIED_SINCE=formatdate(earlier.timestamp(), usegmt=True),
++    )
++    assert response.status_code == 200
++    assert response.content.startswith(b'openapi: 3.0.3\n')
++    assert 'Last-Modified' in response.headers
++
++
++@pytest.mark.urls(__name__)
++def test_spectacular_view_invalid_if_modified_since(no_warnings):
++    response = APIClient().get(
++        '/api/v1/schema/',
++        HTTP_IF_MODIFIED_SINCE='not-a-valid-date',
++    )
++    assert response.status_code == 200
++    assert response.content.startswith(b'openapi: 3.0.3\n')
++    assert 'Last-Modified' in response.headers

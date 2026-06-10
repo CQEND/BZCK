@@ -1,0 +1,85 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+index ad06d82e8..27a40a7b1 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+@@ -22,27 +22,26 @@ import java.io.Serial;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ 
+-@AllArgsConstructor
+-@Getter
+-public final class LoanRepaymentScheduleInstallmentData implements Serializable {
++public record LoanRepaymentScheduleInstallmentData(
++        Long id,
++        Integer installmentId,
++        LocalDate date,
++        BigDecimal amount
++) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private Long id;
+-
+-    private Integer installmentId;
+-
+-    private LocalDate date;
+-
+-    private BigDecimal amount;
+-
+     public static LoanRepaymentScheduleInstallmentData instanceOf(final Long id, final Integer installmentId, final LocalDate date,
+             final BigDecimal amount) {
+         return new LoanRepaymentScheduleInstallmentData(id, installmentId, date, amount);
+     }
+ 
++    // Legacy getters for compatibility
++    public Long getId() { return id; }
++    public Integer getInstallmentId() { return installmentId; }
++    public LocalDate getDate() { return date; }
++    public BigDecimal getAmount() { return amount; }
++
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+index 6e9ede09b..6356c173c 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+@@ -20,22 +20,26 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.util.Objects;
+-import lombok.Getter;
+ 
+ /**
+  * Immutable data object representing the total unpaid charge details
+  */
+-@Getter
+-public class UnpaidChargeData {
++public record UnpaidChargeData(
++        Long chargeId,
++        String chargeName,
++        BigDecimal outstandingAmount
++) {
+ 
+     private static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed";
+-    private final Long chargeId;
+-    private final String chargeName;
+-    private final BigDecimal outstandingAmount;
+ 
+-    public UnpaidChargeData(Long chargeId, String chargeName, BigDecimal outstandingAmount) {
+-        this.chargeId = Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.chargeName = Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.outstandingAmount = Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
++    public UnpaidChargeData {
++        Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
+     }
++
++    // Legacy getters for compatibility
++    public Long getChargeId() { return chargeId; }
++    public String getChargeName() { return chargeName; }
++    public BigDecimal getOutstandingAmount() { return outstandingAmount; }
+ }

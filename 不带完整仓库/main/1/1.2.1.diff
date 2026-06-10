@@ -1,0 +1,667 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
+index ec9d2c259..d26764f2f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationBaseTransactionDTO.java
+@@ -20,23 +20,44 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ 
+ /**
+  * DTO for base transaction information for AmortizationAllocationMapping
+  */
+-@Getter
+-@AllArgsConstructor
+-public class AmortizationAllocationBaseTransactionDTO {
+-
+-    private Long loanId;
+-    private ExternalId loanExternalId;
+-    private Long baseLoanTransactionId;
+-    private LocalDate baseLoanTransactionDate;
+-    private BigDecimal baseLoanTransactionAmount;
+-    private BigDecimal unrecognizedAmount;
+-    private BigDecimal chargedOffAmount;
+-    private BigDecimal adjustmentAmount;
++public record AmortizationAllocationBaseTransactionDTO(Long loanId, ExternalId loanExternalId, Long baseLoanTransactionId,
++        LocalDate baseLoanTransactionDate, BigDecimal baseLoanTransactionAmount, BigDecimal unrecognizedAmount,
++        BigDecimal chargedOffAmount, BigDecimal adjustmentAmount) {
++
++    public Long getLoanId() {
++        return loanId;
++    }
++
++    public ExternalId getLoanExternalId() {
++        return loanExternalId;
++    }
++
++    public Long getBaseLoanTransactionId() {
++        return baseLoanTransactionId;
++    }
++
++    public LocalDate getBaseLoanTransactionDate() {
++        return baseLoanTransactionDate;
++    }
++
++    public BigDecimal getBaseLoanTransactionAmount() {
++        return baseLoanTransactionAmount;
++    }
++
++    public BigDecimal getUnrecognizedAmount() {
++        return unrecognizedAmount;
++    }
++
++    public BigDecimal getChargedOffAmount() {
++        return chargedOffAmount;
++    }
++
++    public BigDecimal getAdjustmentAmount() {
++        return adjustmentAmount;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
+index df7809f6e..f357fba87 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/AmortizationAllocationMappingDTO.java
+@@ -20,21 +20,33 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ import org.apache.fineract.infrastructure.core.domain.ExternalId;
+ import org.apache.fineract.portfolio.loanaccount.domain.AmortizationType;
+ 
+ /**
+  * DTO for amortization allocation mapping data
+  */
+-@Getter
+-@AllArgsConstructor
+-public class AmortizationAllocationMappingDTO {
++public record AmortizationAllocationMappingDTO(Long amortizationLoanTransactionId,
++        ExternalId amortizationLoanTransactionExternalId, LocalDate amortizationDate, AmortizationType amortizationType,
++        BigDecimal amount) {
+ 
+-    private Long amortizationLoanTransactionId;
+-    private ExternalId amortizationLoanTransactionExternalId;
+-    private LocalDate amortizationDate;
+-    private AmortizationType amortizationType;
+-    private BigDecimal amount;
++    public Long getAmortizationLoanTransactionId() {
++        return amortizationLoanTransactionId;
++    }
++
++    public ExternalId getAmortizationLoanTransactionExternalId() {
++        return amortizationLoanTransactionExternalId;
++    }
++
++    public LocalDate getAmortizationDate() {
++        return amortizationDate;
++    }
++
++    public AmortizationType getAmortizationType() {
++        return amortizationType;
++    }
++
++    public BigDecimal getAmount() {
++        return amount;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
+index 0aef796b7..4315a2233 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/DelinquencyPausePeriod.java
+@@ -19,18 +19,18 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.EqualsAndHashCode;
+-import lombok.Getter;
+-import lombok.ToString;
+ 
+-@AllArgsConstructor
+-@ToString
+-@Getter
+-@EqualsAndHashCode
+-public class DelinquencyPausePeriod {
++public record DelinquencyPausePeriod(boolean active, LocalDate pausePeriodStart, LocalDate pausePeriodEnd) {
+ 
+-    private boolean active;
+-    private LocalDate pausePeriodStart;
+-    private LocalDate pausePeriodEnd;
++    public boolean isActive() {
++        return active;
++    }
++
++    public LocalDate getPausePeriodStart() {
++        return pausePeriodStart;
++    }
++
++    public LocalDate getPausePeriodEnd() {
++        return pausePeriodEnd;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
+index 9a9e31c40..9485e56eb 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GLIMContainer.java
+@@ -22,30 +22,8 @@ import java.math.BigDecimal;
+ import java.util.List;
+ import org.apache.fineract.portfolio.accountdetails.data.LoanAccountSummaryData;
+ 
+-public class GLIMContainer {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final String accountNumber;
+-
+-    private final List<LoanAccountSummaryData> childGLIMAccounts;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final String loanStatus;
+-
+-    public GLIMContainer(final BigDecimal glimId, final BigDecimal groupId, final String accountNumber,
+-            final List<LoanAccountSummaryData> childGLIMAccounts, final BigDecimal parentPrincipalAmount, final String loanStatus) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.accountNumber = accountNumber;
+-        this.childGLIMAccounts = childGLIMAccounts;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.loanStatus = loanStatus;
+-
+-    }
++public record GLIMContainer(BigDecimal glimId, BigDecimal groupId, String accountNumber,
++        List<LoanAccountSummaryData> childGLIMAccounts, BigDecimal parentPrincipalAmount, String loanStatus) {
+ 
+     public BigDecimal getGlimId() {
+         return glimId;
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
+index 7ff7cec23..b9a1249c2 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GlimRepaymentTemplate.java
+@@ -21,39 +21,9 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ 
+-public final class GlimRepaymentTemplate {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final BigDecimal clientId;
+-
+-    private final String clientName;
+-
+-    private final BigDecimal childLoanId;
+-
+-    private final String parentAccountNo;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final String childLoanAccountNo;
+-
+-    private final BigDecimal childPrincipalAmount;
+-
+-    private GlimRepaymentTemplate(final BigDecimal glimId, final BigDecimal groupId, final BigDecimal clientId, final String clientName,
+-            final BigDecimal childLoanId, final String parentAccountNo, final BigDecimal parentPrincipalAmount,
+-            final String childLoanAccountNo, final BigDecimal childPrincipalAmount) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.clientId = clientId;
+-        this.clientName = clientName;
+-        this.childLoanId = childLoanId;
+-        this.parentAccountNo = parentAccountNo;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.childLoanAccountNo = childLoanAccountNo;
+-        this.childPrincipalAmount = childPrincipalAmount;
+-    }
++public record GlimRepaymentTemplate(BigDecimal glimId, BigDecimal groupId, BigDecimal clientId, String clientName,
++        BigDecimal childLoanId, String parentAccountNo, BigDecimal parentPrincipalAmount, String childLoanAccountNo,
++        BigDecimal childPrincipalAmount) {
+ 
+     public static GlimRepaymentTemplate getInstance(final BigDecimal glimId, final BigDecimal groupId, final BigDecimal clientId,
+             final String clientName, final BigDecimal childLoanId, final String parentAccountNo, final BigDecimal parentPrincipalAmount,
+@@ -97,5 +67,4 @@ public final class GlimRepaymentTemplate {
+     public BigDecimal getChildPrincipalAmount() {
+         return childPrincipalAmount;
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
+index 023100915..e3a1b1a06 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/GroupLoanIndividualMonitoringAccountData.java
+@@ -21,36 +21,9 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ 
+-public final class GroupLoanIndividualMonitoringAccountData {
+-
+-    private final BigDecimal glimId;
+-
+-    private final BigDecimal groupId;
+-
+-    private final String accountNumber;
+-
+-    private final String childAccountNumber;
+-
+-    private final BigDecimal childPrincipalAmount;
+-
+-    private final BigDecimal parentPrincipalAmount;
+-
+-    private final Long childAccountsCount;
+-
+-    private final String loanStatus;
+-
+-    private GroupLoanIndividualMonitoringAccountData(final BigDecimal glimId, final BigDecimal groupId, final String accountNumber,
+-            final String childAccountNumber, final BigDecimal childPrincipalAmount, final BigDecimal parentPrincipalAmount,
+-            final Long childAccountsCount, final String loanStatus) {
+-        this.glimId = glimId;
+-        this.groupId = groupId;
+-        this.accountNumber = accountNumber;
+-        this.childAccountNumber = childAccountNumber;
+-        this.childPrincipalAmount = childPrincipalAmount;
+-        this.parentPrincipalAmount = parentPrincipalAmount;
+-        this.childAccountsCount = childAccountsCount;
+-        this.loanStatus = loanStatus;
+-    }
++public record GroupLoanIndividualMonitoringAccountData(BigDecimal glimId, BigDecimal groupId, String accountNumber,
++        String childAccountNumber, BigDecimal childPrincipalAmount, BigDecimal parentPrincipalAmount, Long childAccountsCount,
++        String loanStatus) {
+ 
+     public static GroupLoanIndividualMonitoringAccountData getInstance(final BigDecimal glimId, final BigDecimal groupId,
+             final String accountNumber, final String childAccountNumber, final BigDecimal childPrincipalAmount,
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
+index 508a463da..13c884784 100755
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanBorrowerCycleData.java
+@@ -19,15 +19,23 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Getter;
+-import lombok.RequiredArgsConstructor;
+ 
+-@RequiredArgsConstructor
+-@Getter
+-public class LoanBorrowerCycleData {
++public record LoanBorrowerCycleData(BigDecimal principal, BigDecimal interestRatePerPeriod, Integer numberOfRepayments,
++        Integer termFrequency) {
+ 
+-    private final BigDecimal principal;
+-    private final BigDecimal interestRatePerPeriod;
+-    private final Integer numberOfRepayments;
+-    private final Integer termFrequency;
++    public BigDecimal getPrincipal() {
++        return principal;
++    }
++
++    public BigDecimal getInterestRatePerPeriod() {
++        return interestRatePerPeriod;
++    }
++
++    public Integer getNumberOfRepayments() {
++        return numberOfRepayments;
++    }
++
++    public Integer getTermFrequency() {
++        return termFrequency;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+index 5b75fa9f1..d7e2af0a1 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+@@ -21,27 +21,17 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import org.apache.fineract.organisation.monetary.domain.Money;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
+ 
+-public class LoanChargePaidDetail {
+-
+-    private final Money amount;
+-    private final LoanRepaymentScheduleInstallment installment;
+-    private final boolean isFeeCharge;
+-
+-    public LoanChargePaidDetail(Money amount, LoanRepaymentScheduleInstallment installment, boolean isFeeCharge) {
+-        this.amount = amount;
+-        this.installment = installment;
+-        this.isFeeCharge = isFeeCharge;
+-    }
++public record LoanChargePaidDetail(Money amount, LoanRepaymentScheduleInstallment installment, boolean isFeeCharge) {
+ 
+     public Money getAmount() {
+-        return this.amount;
++        return amount;
+     }
+ 
+     public LoanRepaymentScheduleInstallment getInstallment() {
+-        return this.installment;
++        return installment;
+     }
+ 
+     public boolean isFeeCharge() {
+-        return this.isFeeCharge;
++        return isFeeCharge;
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
+index bed684423..0a2335d3c 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanCollateralManagementData.java
+@@ -19,20 +19,27 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public class LoanCollateralManagementData {
++public record LoanCollateralManagementData(Long clientCollateralId, BigDecimal quantity, BigDecimal total,
++        BigDecimal totalCollateral, Long id) {
+ 
+-    private Long clientCollateralId;
++    public Long getClientCollateralId() {
++        return clientCollateralId;
++    }
+ 
+-    private BigDecimal quantity;
++    public BigDecimal getQuantity() {
++        return quantity;
++    }
+ 
+-    private BigDecimal total;
++    public BigDecimal getTotal() {
++        return total;
++    }
+ 
+-    private BigDecimal totalCollateral;
++    public BigDecimal getTotalCollateral() {
++        return totalCollateral;
++    }
+ 
+-    private Long id;
++    public Long getId() {
++        return id;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
+index ac2408c3c..b8bcdaaed 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanConvenienceData.java
+@@ -18,53 +18,35 @@
+  */
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+-public class LoanConvenienceData {
+-
+-    private final int maxSubmittedOnOffsetFromToday;
+-    private final int maxApprovedOnOffsetFromToday;
+-    private final int maxDisbursedOnOffsetFromToday;
+-    private final int expectedLoanTermInDays;
+-    private final int actualLoanTermInDays;
+-    private final int expectedLoanTermInMonths;
+-    private final int actualLoanTermInMonths;
+-
+-    public LoanConvenienceData(final int maxSubmittedOnOffsetFromToday, final int maxApprovedOnOffsetFromToday,
+-            final int maxDisbursedOnOffsetFromToday, final int expectedLoanTermInDays, final int actualLoanTermInDays,
+-            final int expectedLoanTermInMonths, final int actualLoanTermInMonths) {
+-        this.maxSubmittedOnOffsetFromToday = maxSubmittedOnOffsetFromToday;
+-        this.maxApprovedOnOffsetFromToday = maxApprovedOnOffsetFromToday;
+-        this.maxDisbursedOnOffsetFromToday = maxDisbursedOnOffsetFromToday;
+-        this.expectedLoanTermInDays = expectedLoanTermInDays;
+-        this.actualLoanTermInDays = actualLoanTermInDays;
+-        this.expectedLoanTermInMonths = expectedLoanTermInMonths;
+-        this.actualLoanTermInMonths = actualLoanTermInMonths;
+-    }
++public record LoanConvenienceData(int maxSubmittedOnOffsetFromToday, int maxApprovedOnOffsetFromToday,
++        int maxDisbursedOnOffsetFromToday, int expectedLoanTermInDays, int actualLoanTermInDays, int expectedLoanTermInMonths,
++        int actualLoanTermInMonths) {
+ 
+     public int getMaxSubmittedOnOffsetFromToday() {
+-        return this.maxSubmittedOnOffsetFromToday;
++        return maxSubmittedOnOffsetFromToday;
+     }
+ 
+     public int getMaxApprovedOnOffsetFromToday() {
+-        return this.maxApprovedOnOffsetFromToday;
++        return maxApprovedOnOffsetFromToday;
+     }
+ 
+     public int getMaxDisbursedOnOffsetFromToday() {
+-        return this.maxDisbursedOnOffsetFromToday;
++        return maxDisbursedOnOffsetFromToday;
+     }
+ 
+     public int getExpectedLoanTermInDays() {
+-        return this.expectedLoanTermInDays;
++        return expectedLoanTermInDays;
+     }
+ 
+     public int getActualLoanTermInDays() {
+-        return this.actualLoanTermInDays;
++        return actualLoanTermInDays;
+     }
+ 
+     public int getExpectedLoanTermInMonths() {
+-        return this.expectedLoanTermInMonths;
++        return expectedLoanTermInMonths;
+     }
+ 
+     public int getActualLoanTermInMonths() {
+-        return this.actualLoanTermInMonths;
++        return actualLoanTermInMonths;
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+index 22daadc5c..f8596cf96 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+@@ -19,21 +19,31 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public class LoanRefundRequestData {
++public record LoanRefundRequestData(BigDecimal principal, BigDecimal interest, BigDecimal feeCharges, BigDecimal penaltyCharges,
++        BigDecimal overpayment) {
+ 
+-    private final BigDecimal principal;
+-    private final BigDecimal interest;
+-    private final BigDecimal feeCharges;
+-    private final BigDecimal penaltyCharges;
+-    private final BigDecimal overpayment;
++    public BigDecimal getPrincipal() {
++        return principal;
++    }
++
++    public BigDecimal getInterest() {
++        return interest;
++    }
++
++    public BigDecimal getFeeCharges() {
++        return feeCharges;
++    }
++
++    public BigDecimal getPenaltyCharges() {
++        return penaltyCharges;
++    }
++
++    public BigDecimal getOverpayment() {
++        return overpayment;
++    }
+ 
+     public BigDecimal getTotalAmount() {
+         return principal.add(interest).add(feeCharges).add(penaltyCharges);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
+index 68d07db23..ae04ae177 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentPastDueData.java
+@@ -19,17 +19,27 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ 
+-@Getter
+-@AllArgsConstructor
+-public class LoanRepaymentPastDueData {
++public record LoanRepaymentPastDueData(BigDecimal totalAmount, BigDecimal principalAmount, BigDecimal interestAmount,
++        BigDecimal feeAmount, BigDecimal penaltyAmount) {
+ 
+-    private final BigDecimal totalAmount;
+-    private final BigDecimal principalAmount;
+-    private final BigDecimal interestAmount;
+-    private final BigDecimal feeAmount;
+-    private final BigDecimal penaltyAmount;
++    public BigDecimal getTotalAmount() {
++        return totalAmount;
++    }
+ 
++    public BigDecimal getPrincipalAmount() {
++        return principalAmount;
++    }
++
++    public BigDecimal getInterestAmount() {
++        return interestAmount;
++    }
++
++    public BigDecimal getFeeAmount() {
++        return feeAmount;
++    }
++
++    public BigDecimal getPenaltyAmount() {
++        return penaltyAmount;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+index ad06d82e8..bfb8f7ae4 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+@@ -22,27 +22,31 @@ import java.io.Serial;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.time.LocalDate;
+-import lombok.AllArgsConstructor;
+-import lombok.Getter;
+ 
+-@AllArgsConstructor
+-@Getter
+-public final class LoanRepaymentScheduleInstallmentData implements Serializable {
++public record LoanRepaymentScheduleInstallmentData(Long id, Integer installmentId, LocalDate date,
++        BigDecimal amount) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private Long id;
+-
+-    private Integer installmentId;
+-
+-    private LocalDate date;
+-
+-    private BigDecimal amount;
+-
+     public static LoanRepaymentScheduleInstallmentData instanceOf(final Long id, final Integer installmentId, final LocalDate date,
+             final BigDecimal amount) {
+         return new LoanRepaymentScheduleInstallmentData(id, installmentId, date, amount);
+     }
+ 
++    public Long getId() {
++        return id;
++    }
++
++    public Integer getInstallmentId() {
++        return installmentId;
++    }
++
++    public LocalDate getDate() {
++        return date;
++    }
++
++    public BigDecimal getAmount() {
++        return amount;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+index be643496f..f0aea322f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+@@ -19,13 +19,10 @@
+ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+-import lombok.Getter;
+-import lombok.RequiredArgsConstructor;
+ 
+-@Getter
+-@RequiredArgsConstructor
+-public class PaidInAdvanceData {
+-
+-    private final BigDecimal paidInAdvance;
++public record PaidInAdvanceData(BigDecimal paidInAdvance) {
+ 
++    public BigDecimal getPaidInAdvance() {
++        return paidInAdvance;
++    }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+index 6e9ede09b..95b58f067 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+@@ -20,22 +20,29 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ 
+ import java.math.BigDecimal;
+ import java.util.Objects;
+-import lombok.Getter;
+ 
+ /**
+  * Immutable data object representing the total unpaid charge details
+  */
+-@Getter
+-public class UnpaidChargeData {
++public record UnpaidChargeData(Long chargeId, String chargeName, BigDecimal outstandingAmount) {
+ 
+     private static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed";
+-    private final Long chargeId;
+-    private final String chargeName;
+-    private final BigDecimal outstandingAmount;
+ 
+-    public UnpaidChargeData(Long chargeId, String chargeName, BigDecimal outstandingAmount) {
+-        this.chargeId = Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.chargeName = Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.outstandingAmount = Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
++    public UnpaidChargeData {
++        Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
++    }
++
++    public Long getChargeId() {
++        return chargeId;
++    }
++
++    public String getChargeName() {
++        return chargeName;
++    }
++
++    public BigDecimal getOutstandingAmount() {
++        return outstandingAmount;
+     }
+ }

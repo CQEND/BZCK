@@ -1,0 +1,568 @@
+diff --git a/.github/workflows/build-postgresql.yml b/.github/workflows/build-postgresql.yml
+index 4cc23d091..8e091b25d 100644
+--- a/.github/workflows/build-postgresql.yml
++++ b/.github/workflows/build-postgresql.yml
+@@ -58,7 +58,7 @@ jobs:
+           validate-wrappers: true
+ 
+       - name: Build the image
+-        run: ./gradlew --no-daemon --console=plain :fineract-provider:jibDockerBuild -Djib.to.image=$IMAGE_NAME -x test -x cucumber -x buildJavaSdk
++        run: ./gradlew --no-daemon --console=plain :custom:docker:jibDockerBuild -Djib.to.image=$IMAGE_NAME -x test -x cucumber -x buildJavaSdk
+ 
+       - name: Start dependencies
+         run: docker compose -f "$COMPOSE_FILE" up -d db localstack mock-oauth2-server
+diff --git a/build.gradle b/build.gradle
+index 6cfc947e9..a994e1f64 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -18,10 +18,17 @@
+  */
+ // TODO: this is work in progress, please follow FINERACT-1171
+ buildscript {
++    def catalogVersions = [:]
++    file("$rootDir/gradle/libs.versions.toml").eachLine { line ->
++        def matcher = line =~ /^([A-Za-z0-9]+)\s*=\s*"([^"]+)"$/
++        if (matcher.matches()) {
++            catalogVersions[matcher[0][1]] = matcher[0][2]
++        }
++    }
+     ext {
+-        jacocoVersion = '0.8.14'
+-        retrofitVersion = '2.9.0'
+-        okhttpVersion = '4.9.3'
++        jacocoVersion = catalogVersions.jacoco
++        retrofitVersion = catalogVersions.retrofit
++        okhttpVersion = catalogVersions.okhttp
+         fineractCustomProjects = []
+         fineractJavaProjects = subprojects.findAll{
+             [
+@@ -36,7 +43,6 @@ buildscript {
+                 'fineract-command-async',
+                 'fineract-command-disruptor',
+                 'fineract-accounting',
+-                'fineract-provider',
+                 'fineract-branch',
+                 'fineract-document',
+                 'fineract-investor',
+@@ -74,7 +80,6 @@ buildscript {
+                 'fineract-command-jdbc',
+                 'fineract-command-audit',
+                 'fineract-accounting',
+-                'fineract-provider',
+                 'fineract-investor',
+                 'fineract-charge',
+                 'fineract-rates',
+@@ -165,7 +170,8 @@ gitVersioning.apply {
+     }
+ }
+ 
+-ext['groovy.version'] = '4.0.17'
++def libsCatalog = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
++ext['groovy.version'] = libsCatalog.findVersion('groovy').get().requiredVersion
+ ext['swaggerFile'] = "$rootDir/fineract-provider/build/resources/main/static/fineract.json".toString()
+ 
+ // Apply static weaving configuration to all subprojects
+diff --git a/fineract-accounting/dependencies.gradle b/fineract-accounting/dependencies.gradle
+index 907e72eac..bc117c14c 100644
+--- a/fineract-accounting/dependencies.gradle
++++ b/fineract-accounting/dependencies.gradle
+@@ -26,55 +26,55 @@ dependencies {
+     //
+     implementation(project(path: ':fineract-core'))
+     implementation(project(path: ':fineract-charge'))
+-    implementation('org.apache.avro:avro')
++    implementation(libs.avro)
+     implementation(
+             project(path: ':fineract-avro-schemas')
+             )
+ 
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
++            libs.springBootStarterWeb,
++            libs.springBootStarterSecurity,
++            libs.springBootStarterBatch,
++            libs.springBatchIntegration,
++            libs.jakartaWsRsApi,
++            libs.jerseyMediaMultipart,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commonsLang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.jsonPath,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swaggerAnnotationsJakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofitConverterGson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdocOpenapiStarterWebmvcUi,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
++            libs.resilience4jSpringBoot3,
+             )
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    compileOnly libs.spotbugsAnnotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstructProcessor
++    implementation(libs.springBootStarterDataJpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselinkJpa) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+     // testCompile dependencies are ONLY used in src/test, not src/main.
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+-    testImplementation( 'io.github.classgraph:classgraph' )
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++    testImplementation(libs.classgraph)
++    testImplementation(libs.springBootStarterTest) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
++    testImplementation(libs.mockitoInline)
+ }
+diff --git a/fineract-core/dependencies.gradle b/fineract-core/dependencies.gradle
+index 688b002c1..f0ef25c20 100644
+--- a/fineract-core/dependencies.gradle
++++ b/fineract-core/dependencies.gradle
+@@ -30,36 +30,36 @@ dependencies {
+ 
+     // implementation dependencies are directly used (compiled against) in src/main (and src/test)
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-validation',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
+-            'org.apache.avro:avro',
++            libs.springBootStarterWeb,
++            libs.springBootStarterSecurity,
++            libs.springBootStarterValidation,
++            libs.springBootStarterBatch,
++            libs.springBatchIntegration,
++            libs.jakartaWsRsApi,
++            libs.jerseyMediaMultipart,
++            libs.avro,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commonsLang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.jsonPath,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swaggerAnnotationsJakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofitConverterGson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdocOpenapiStarterWebmvcUi,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
+-            'org.apache.httpcomponents:httpcore',
++            libs.resilience4jSpringBoot3,
++            libs.httpcore,
+             )
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    implementation(libs.springBootStarterDataJpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselinkJpa) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+     implementation('org.springframework.boot:spring-boot-starter-jersey') {
+@@ -74,10 +74,10 @@ dependencies {
+     implementation ('jakarta.xml.bind:jakarta.xml.bind-api') {
+         exclude group: 'jakarta.activation'
+     }
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    implementation(libs.springBootStarterDataJpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselinkJpa) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+     runtimeOnly('org.glassfish.jaxb:jaxb-runtime') {
+@@ -92,30 +92,30 @@ dependencies {
+             'org.apache.httpcomponents:httpclient'
+             )
+ 
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
++    compileOnly libs.spotbugsAnnotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstructProcessor
+ 
+-    implementation 'ch.qos.logback.contrib:logback-json-classic'
+-    implementation 'ch.qos.logback.contrib:logback-jackson'
+-    implementation 'org.codehaus.janino:janino'
++    implementation libs.logbackJsonClassic
++    implementation libs.logbackJackson
++    implementation libs.janino
+ 
+-    implementation 'org.apache.commons:commons-math3'
++    implementation libs.commonsMath3
+ 
+-    implementation 'io.github.classgraph:classgraph'
++    implementation libs.classgraph
+     // testCompile dependencies are ONLY used in src/test, not src/main.
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+-    testImplementation( 'io.github.classgraph:classgraph')
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++    testImplementation(libs.classgraph)
++    testImplementation(libs.springBootStarterTest) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    implementation ('org.mnode.ical4j:ical4j') {
++    implementation(libs.ical4j) {
+         exclude group: 'commons-logging'
+         exclude group: 'javax.activation'
+         exclude group: 'com.sun.mail', module: 'javax.mail'
+@@ -123,8 +123,8 @@ dependencies {
+     implementation ('org.quartz-scheduler:quartz') {
+         exclude group: 'com.zaxxer', module: 'HikariCP-java7'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
+-    implementation('org.apache.avro:avro')
++    testImplementation(libs.mockitoInline)
++    implementation(libs.avro)
+     implementation(
+             project(path: ':fineract-avro-schemas')
+             )
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java b/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+index 208bdebac..045d22130 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
++++ b/fineract-core/src/main/java/org/apache/fineract/portfolio/search/data/AdHocQuerySearchConditions.java
+@@ -22,10 +22,14 @@ import java.math.BigDecimal;
+ import java.time.LocalDate;
+ import java.util.ArrayList;
+ import java.util.List;
+-import org.apache.fineract.portfolio.loanaccount.domain.LoanStatus;
+ 
+ public class AdHocQuerySearchConditions {
+ 
++    private static final String ACTIVE_STATUS = "300";
++    private static final String OVERPAID_STATUS = "700";
++    private static final String CLOSED_OBLIGATIONS_MET_STATUS = "600";
++    private static final String CLOSED_WRITTEN_OFF_STATUS = "601";
++
+     private final List<String> loanStatus;
+     private final List<Long> loanProducts;
+     private final List<Long> offices;
+@@ -94,19 +98,19 @@ public class AdHocQuerySearchConditions {
+             for (String statusCode : this.loanStatus) {
+ 
+                 if (statusCode.equalsIgnoreCase("active")) {
+-                    loanStatusValues.add(LoanStatus.ACTIVE.getValue().toString());
++                    loanStatusValues.add(ACTIVE_STATUS);
+                 }
+ 
+                 if (statusCode.equalsIgnoreCase("overpaid")) {
+-                    loanStatusValues.add(LoanStatus.OVERPAID.getValue().toString());
++                    loanStatusValues.add(OVERPAID_STATUS);
+                 }
+ 
+                 if (statusCode.equalsIgnoreCase("closed")) {
+-                    loanStatusValues.add(LoanStatus.CLOSED_OBLIGATIONS_MET.getValue().toString());
++                    loanStatusValues.add(CLOSED_OBLIGATIONS_MET_STATUS);
+                 }
+ 
+                 if (statusCode.equalsIgnoreCase("writeoff")) {
+-                    loanStatusValues.add(LoanStatus.CLOSED_WRITTEN_OFF.getValue().toString());
++                    loanStatusValues.add(CLOSED_WRITTEN_OFF_STATUS);
+                 }
+ 
+                 if (statusCode.equalsIgnoreCase("arrears")) {
+diff --git a/fineract-loan/dependencies.gradle b/fineract-loan/dependencies.gradle
+index f18abff89..dac546977 100644
+--- a/fineract-loan/dependencies.gradle
++++ b/fineract-loan/dependencies.gradle
+@@ -32,58 +32,58 @@ dependencies {
+     implementation(project(path: ':fineract-tax'))
+ 
+     implementation(
+-            'org.springframework.boot:spring-boot-starter-web',
+-            'org.springframework.boot:spring-boot-starter-security',
+-            'org.springframework.boot:spring-boot-starter-batch',
+-            'org.springframework.batch:spring-batch-integration',
++            libs.springBootStarterWeb,
++            libs.springBootStarterSecurity,
++            libs.springBootStarterBatch,
++            libs.springBatchIntegration,
+ 
+-            'jakarta.ws.rs:jakarta.ws.rs-api',
+-            'org.glassfish.jersey.media:jersey-media-multipart',
++            libs.jakartaWsRsApi,
++            libs.jerseyMediaMultipart,
+ 
+-            'com.google.guava:guava',
+-            'com.google.code.gson:gson',
++            libs.guava,
++            libs.gson,
+ 
+-            'org.apache.commons:commons-lang3',
++            libs.commonsLang3,
+ 
+-            'com.jayway.jsonpath:json-path',
++            libs.jsonPath,
+ 
+-            'io.swagger.core.v3:swagger-annotations-jakarta',
++            libs.swaggerAnnotationsJakarta,
+ 
+-            'com.squareup.retrofit2:converter-gson',
++            libs.retrofitConverterGson,
+ 
+-            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+-            'org.mapstruct:mapstruct',
++            libs.springdocOpenapiStarterWebmvcUi,
++            libs.mapstruct,
+ 
+-            'io.github.resilience4j:resilience4j-spring-boot3',
+-            'org.apache.httpcomponents:httpcore',
+-            'org.apache.commons:commons-collections4'
++            libs.resilience4jSpringBoot3,
++            libs.httpcore,
++            libs.commonsCollections4
+ 
+             )
+-    implementation ('org.mnode.ical4j:ical4j') {
++    implementation(libs.ical4j) {
+         exclude group: 'commons-logging'
+         exclude group: 'javax.activation'
+         exclude group: 'com.sun.mail', module: 'javax.mail'
+     }
+-    compileOnly 'com.github.spotbugs:spotbugs-annotations'
+-    compileOnly 'org.projectlombok:lombok'
+-    annotationProcessor 'org.projectlombok:lombok'
+-    annotationProcessor 'org.mapstruct:mapstruct-processor'
+-    implementation ('org.springframework.boot:spring-boot-starter-data-jpa') {
++    compileOnly libs.spotbugsAnnotations
++    compileOnly libs.lombok
++    annotationProcessor libs.lombok
++    annotationProcessor libs.mapstructProcessor
++    implementation(libs.springBootStarterDataJpa) {
+         exclude group: 'org.hibernate'
+     }
+-    implementation('org.eclipse.persistence:org.eclipse.persistence.jpa') {
++    implementation(libs.eclipselinkJpa) {
+         exclude group: 'org.eclipse.persistence', module: 'jakarta.persistence'
+     }
+     // testCompile dependencies are ONLY used in src/test, not src/main.
+     // Do NOT repeat dependencies which are ALREADY in implementation or runtimeOnly!
+     //
+-    testImplementation( 'io.github.classgraph:classgraph' )
+-    testImplementation ('org.springframework.boot:spring-boot-starter-test') {
++    testImplementation(libs.classgraph)
++    testImplementation(libs.springBootStarterTest) {
+         exclude group: 'com.jayway.jsonpath', module: 'json-path'
+         exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+         exclude group: 'jakarta.activation'
+         exclude group: 'javax.activation'
+         exclude group: 'org.skyscreamer'
+     }
+-    testImplementation ('org.mockito:mockito-inline')
++    testImplementation(libs.mockitoInline)
+ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+similarity index 69%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+index 8a169bb31..9209bd54e 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/ExpectedDisbursementDateValidator.java
+@@ -20,19 +20,7 @@ package org.apache.fineract.portfolio.loanaccount.domain;
+ 
+ import java.time.LocalDate;
+ 
+-/**
+- * Validates expected disbursement date against business rules (e.g. non-working day, holiday).
+- */
+ public interface ExpectedDisbursementDateValidator {
+ 
+-    /**
+-     * Validates that the expected disbursement date is allowed (e.g. not on a non-working day or holiday when
+-     * configuration disallows it). Throws if validation fails.
+-     *
+-     * @param expectedDisbursementDate
+-     *            the date to validate
+-     * @param officeId
+-     *            office context
+-     */
+     void validate(LocalDate expectedDisbursementDate, Long officeId);
+ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+similarity index 92%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+index f8e8efe38..940420a63 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanStatus.java
+@@ -20,23 +20,20 @@ package org.apache.fineract.portfolio.loanaccount.domain;
+ 
+ import org.springframework.util.StringUtils;
+ 
+-/**
+- * Enum representation of loan status states.
+- */
+ public enum LoanStatus {
+ 
+-    INVALID(0, "loanStatusType.invalid"), //
+-    SUBMITTED_AND_PENDING_APPROVAL(100, "loanStatusType.submitted.and.pending.approval"), //
+-    APPROVED(200, "loanStatusType.approved"), //
+-    ACTIVE(300, "loanStatusType.active"), //
+-    TRANSFER_IN_PROGRESS(303, "loanStatusType.transfer.in.progress"), //
+-    TRANSFER_ON_HOLD(304, "loanStatusType.transfer.on.hold"), //
+-    WITHDRAWN_BY_CLIENT(400, "loanStatusType.withdrawn.by.client"), //
+-    REJECTED(500, "loanStatusType.rejected"), //
+-    CLOSED_OBLIGATIONS_MET(600, "loanStatusType.closed.obligations.met"), //
+-    CLOSED_WRITTEN_OFF(601, "loanStatusType.closed.written.off"), //
+-    CLOSED_RESCHEDULE_OUTSTANDING_AMOUNT(602, "loanStatusType.closed.reschedule.outstanding.amount"), //
+-    OVERPAID(700, "loanStatusType.overpaid"); //
++    INVALID(0, "loanStatusType.invalid"),
++    SUBMITTED_AND_PENDING_APPROVAL(100, "loanStatusType.submitted.and.pending.approval"),
++    APPROVED(200, "loanStatusType.approved"),
++    ACTIVE(300, "loanStatusType.active"),
++    TRANSFER_IN_PROGRESS(303, "loanStatusType.transfer.in.progress"),
++    TRANSFER_ON_HOLD(304, "loanStatusType.transfer.on.hold"),
++    WITHDRAWN_BY_CLIENT(400, "loanStatusType.withdrawn.by.client"),
++    REJECTED(500, "loanStatusType.rejected"),
++    CLOSED_OBLIGATIONS_MET(600, "loanStatusType.closed.obligations.met"),
++    CLOSED_WRITTEN_OFF(601, "loanStatusType.closed.written.off"),
++    CLOSED_RESCHEDULE_OUTSTANDING_AMOUNT(602, "loanStatusType.closed.reschedule.outstanding.amount"),
++    OVERPAID(700, "loanStatusType.overpaid");
+ 
+     private final Integer value;
+     private final String code;
+diff --git a/fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+similarity index 100%
+rename from fineract-core/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+rename to fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceCommon.java
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+new file mode 100644
+index 000000000..db5b25a9b
+--- /dev/null
++++ b/gradle/libs.versions.toml
+@@ -0,0 +1,58 @@
++[versions]
++springBoot = "3.5.14"
++eclipselink = "4.0.9"
++jersey = "3.1.11"
++lombok = "1.18.46"
++mapstruct = "1.6.3"
++resilience4j = "2.4.0"
++testcontainers = "1.21.4"
++springdoc = "2.8.17"
++swagger = "2.2.49"
++classgraph = "4.8.184"
++spotbugs = "4.9.8"
++mockitoInline = "5.2.0"
++ical4j = "3.2.19"
++httpcore = "5.4"
++commonsCollections4 = "4.5.0"
++commonsLang3 = "3.20.0"
++logbackContrib = "0.1.5"
++janino = "3.1.12"
++avro = "1.12.1"
++groovy = "4.0.17"
++jacoco = "0.8.14"
++retrofit = "2.12.0"
++okhttp = "4.12.0"
++
++[libraries]
++springBootStarterWeb = { module = "org.springframework.boot:spring-boot-starter-web", version.ref = "springBoot" }
++springBootStarterSecurity = { module = "org.springframework.boot:spring-boot-starter-security", version.ref = "springBoot" }
++springBootStarterValidation = { module = "org.springframework.boot:spring-boot-starter-validation", version.ref = "springBoot" }
++springBootStarterBatch = { module = "org.springframework.boot:spring-boot-starter-batch", version.ref = "springBoot" }
++springBootStarterDataJpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa", version.ref = "springBoot" }
++springBootStarterTest = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "springBoot" }
++springBatchIntegration = { module = "org.springframework.batch:spring-batch-integration", version.ref = "springBoot" }
++jakartaWsRsApi = { module = "jakarta.ws.rs:jakarta.ws.rs-api" }
++jerseyMediaMultipart = { module = "org.glassfish.jersey.media:jersey-media-multipart", version.ref = "jersey" }
++guava = { module = "com.google.guava:guava" }
++gson = { module = "com.google.code.gson:gson" }
++commonsLang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commonsLang3" }
++commonsCollections4 = { module = "org.apache.commons:commons-collections4", version.ref = "commonsCollections4" }
++jsonPath = { module = "com.jayway.jsonpath:json-path" }
++swaggerAnnotationsJakarta = { module = "io.swagger.core.v3:swagger-annotations-jakarta", version.ref = "swagger" }
++retrofitConverterGson = { module = "com.squareup.retrofit2:converter-gson", version.ref = "retrofit" }
++springdocOpenapiStarterWebmvcUi = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
++mapstruct = { module = "org.mapstruct:mapstruct", version.ref = "mapstruct" }
++mapstructProcessor = { module = "org.mapstruct:mapstruct-processor", version.ref = "mapstruct" }
++resilience4jSpringBoot3 = { module = "io.github.resilience4j:resilience4j-spring-boot3", version.ref = "resilience4j" }
++httpcore = { module = "org.apache.httpcomponents.core5:httpcore5", version.ref = "httpcore" }
++ical4j = { module = "org.mnode.ical4j:ical4j", version.ref = "ical4j" }
++spotbugsAnnotations = { module = "com.github.spotbugs:spotbugs-annotations", version.ref = "spotbugs" }
++lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
++eclipselinkJpa = { module = "org.eclipse.persistence:org.eclipse.persistence.jpa", version.ref = "eclipselink" }
++classgraph = { module = "io.github.classgraph:classgraph", version.ref = "classgraph" }
++mockitoInline = { module = "org.mockito:mockito-inline", version.ref = "mockitoInline" }
++avro = { module = "org.apache.avro:avro", version.ref = "avro" }
++logbackJsonClassic = { module = "ch.qos.logback.contrib:logback-json-classic", version.ref = "logbackContrib" }
++logbackJackson = { module = "ch.qos.logback.contrib:logback-jackson", version.ref = "logbackContrib" }
++janino = { module = "org.codehaus.janino:janino", version.ref = "janino" }
++commonsMath3 = { module = "org.apache.commons:commons-math3" }
+diff --git a/settings.gradle b/settings.gradle
+index cc45f2797..90c97cf42 100644
+--- a/settings.gradle
++++ b/settings.gradle
+@@ -46,6 +46,14 @@ buildCache {
+     }
+ }
+ 
++dependencyResolutionManagement {
++    versionCatalogs {
++        libs {
++            from(files("$rootDir/gradle/libs.versions.toml"))
++        }
++    }
++}
++
+ rootProject.name='fineract'
+ include ':fineract-core'
+ include ':fineract-security'

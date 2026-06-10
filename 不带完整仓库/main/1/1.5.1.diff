@@ -1,0 +1,839 @@
+diff --git a/delinquency-fix.diff b/delinquency-fix.diff
+new file mode 100644
+index 000000000..8f7f7fa1b
+--- /dev/null
++++ b/delinquency-fix.diff
+@@ -0,0 +1,400 @@
++diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++index 2b8d4c1..8c8a1ab 100644
++--- a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++@@ -20,9 +20,11 @@ package org.apache.fineract.organisation.holiday.service;
++ import java.time.LocalDate;
++ import java.util.List;
++ import org.apache.fineract.infrastructure.core.service.DateUtils;
++ import org.apache.fineract.organisation.holiday.domain.Holiday;
++ import org.apache.fineract.organisation.workingdays.data.AdjustedDateDetailsDTO;
+++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
+++import org.apache.fineract.organisation.workingdays.service.WorkingDaysUtil;
++ 
++ public final class HolidayUtil {
++@@ -30,6 +32,9 @@ public final class HolidayUtil {
++     }
++ 
++     public static LocalDate getRepaymentRescheduleDateToIfHoliday(LocalDate repaymentDate, final List<Holiday> holidays) {
+++        if (holidays == null || holidays.isEmpty()) {
+++            return repaymentDate;
+++        }
++         for (final Holiday holiday : holidays) {
++             if (isHoliday(repaymentDate, holiday)) {
++                 repaymentDate = holiday.getRepaymentsRescheduledTo();
++@@ -41,6 +46,9 @@ public final class HolidayUtil {
++     }
++ 
++     public static Holiday getApplicableHoliday(final LocalDate repaymentDate, final List<Holiday> holidays) {
+++        if (repaymentDate == null || holidays == null || holidays.isEmpty()) {
+++            return null;
+++        }
++         for (final Holiday holiday : holidays) {
++             if (isHoliday(repaymentDate, holiday)) {
++                 return holiday;
++@@ -51,6 +59,38 @@ public final class HolidayUtil {
++     public static boolean isHoliday(LocalDate date, Holiday holiday) {
++         return !DateUtils.isBefore(date, holiday.getFromDate()) && !DateUtils.isAfter(date, holiday.getToDate());
++     }
+++
+++    public static boolean isBusinessDay(LocalDate date, boolean holidayEnabled, List<Holiday> holidays, WorkingDays workingDays) {
+++        final boolean holiday = holidayEnabled && isHoliday(date, holidays);
+++        final boolean nonWorkingDay = workingDays != null && WorkingDaysUtil.isNonWorkingDay(workingDays, date);
+++        return !holiday && !nonWorkingDay;
+++    }
+++
+++    public static long getBusinessDaysBetween(LocalDate startInclusive, LocalDate endExclusive, boolean holidayEnabled, List<Holiday> holidays,
+++            WorkingDays workingDays) {
+++        if (startInclusive == null || endExclusive == null || !DateUtils.isBefore(startInclusive, endExclusive)) {
+++            return 0L;
+++        }
+++        long businessDays = 0L;
+++        for (LocalDate date = startInclusive; DateUtils.isBefore(date, endExclusive); date = date.plusDays(1)) {
+++            if (isBusinessDay(date, holidayEnabled, holidays, workingDays)) {
+++                businessDays++;
+++            }
+++        }
+++        return businessDays;
+++    }
+++
+++    public static LocalDate addBusinessDays(LocalDate startDate, long businessDays, boolean holidayEnabled, List<Holiday> holidays,
+++            WorkingDays workingDays) {
+++        if (startDate == null || businessDays <= 0) {
+++            return startDate;
+++        }
+++        LocalDate result = startDate;
+++        long remainingBusinessDays = businessDays;
+++        while (remainingBusinessDays > 0) {
+++            result = result.plusDays(1);
+++            if (isBusinessDay(result, holidayEnabled, holidays, workingDays)) {
+++                remainingBusinessDays--;
+++            }
+++        }
+++        return result;
+++    }
++ 
++     public static void updateRepaymentRescheduleDateToWorkingDayIfItIsHoliday(final AdjustedDateDetailsDTO adjustedDateDetailsDTO,
++             final Holiday holiday) {
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++index 8714b67..f48295f 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++@@ -46,6 +46,7 @@ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepository;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepositoryWrapper;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionRepository;
+++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
++ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
++ import org.apache.fineract.portfolio.loanproduct.domain.LoanProductRepository;
++@@ -100,8 +101,8 @@ public class DelinquencyConfiguration {
++     @Bean
++     @ConditionalOnMissingBean(LoanDelinquencyDomainService.class)
++     public LoanDelinquencyDomainService loanDelinquencyDomainService(DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper,
++-            LoanTransactionReadService loanTransactionReadService) {
++-        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService);
+++            LoanTransactionReadService loanTransactionReadService, ILoanUtilService loanUtilService) {
+++        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService, loanUtilService);
++     }
++ }
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++index 9674223..fb73d0e 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++@@ -25,14 +25,17 @@ import java.util.List;
++ import java.util.Map;
++ import java.util.Objects;
++ import lombok.RequiredArgsConstructor;
++ import lombok.extern.slf4j.Slf4j;
++ import org.apache.fineract.infrastructure.core.service.DateUtils;
+++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
++ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
++ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
++ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
++ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+++import org.apache.fineract.portfolio.loanaccount.data.HolidayDetailDTO;
++ import org.apache.fineract.portfolio.loanaccount.data.LoanDelinquencyData;
++ import org.apache.fineract.portfolio.loanaccount.domain.Loan;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransaction;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
+++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
++ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
++@@ -43,6 +46,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++ 
++     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
++     private final LoanTransactionReadService loanTransactionReadService;
+++    private final ILoanUtilService loanUtilService;
++ 
++     @Override
++     @Transactional(readOnly = true)
++@@ -51,6 +55,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++                 LoanTransactionType.CHARGEBACK);
++         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
++         final MonetaryCurrency loanCurrency = loan.getCurrency();
+++        final HolidayDetailDTO holidayDetailDTO = getHolidayDetailDTO(loan, businessDate);
++         final CollectionData collectionData = CollectionData.template();
++@@ -120,12 +125,9 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++         long overdueDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++-            if (overdueDays < 0) {
++-                overdueDays = 0L;
++-            }
+++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++-            LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
++-            collectionData.setDelinquentDate(delinquentStartDate);
+++            collectionData.setDelinquentDate(calculateDelinquentDate(overdueSinceDate, graceDays, holidayDetailDTO));
++         }
++@@ -135,7 +137,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++         collectionData.setDelinquentPenalty(delinquentPenalty);
++ 
++         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, holidayDetailDTO);
++@@ -145,6 +147,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++         final List<LoanTransaction> chargebackTransactions = loanTransactionReadService.fetchLoanTransactionsByType(loan.getId(), null,
++                 LoanTransactionType.CHARGEBACK);
++         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
+++        final HolidayDetailDTO holidayDetailDTO = getHolidayDetailDTO(loan, businessDate);
++         final CollectionData collectionData = CollectionData.template();
++         final Map<Long, CollectionData> loanInstallmentsCollectionData = new HashMap<>();
++@@ -165,7 +168,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++             CollectionData installmentCollectionData = CollectionData.template();
++             if (!installment.isObligationsMet()) {
++                 installmentCollectionData = getInstallmentOverdueCollectionData(loan, installment, effectiveDelinquencyList,
++-                        chargebackTransactions);
+++                        chargebackTransactions, holidayDetailDTO);
++                 outstandingAmount = outstandingAmount.add(installmentCollectionData.getDelinquentAmount());
++@@ -194,19 +197,16 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++         long overdueDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++-            if (overdueDays < 0) {
++-                overdueDays = 0L;
++-            }
+++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++-            LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
++-            collectionData.setDelinquentDate(delinquentStartDate);
+++            collectionData.setDelinquentDate(calculateDelinquentDate(overdueSinceDate, graceDays, holidayDetailDTO));
++         }
++         collectionData.setDelinquentAmount(outstandingAmount);
++         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, holidayDetailDTO);
++         return new LoanDelinquencyData(collectionData, loanInstallmentsCollectionData);
++     }
++ 
++     private CollectionData getInstallmentOverdueCollectionData(final Loan loan, final LoanRepaymentScheduleInstallment installment,
++-            final List<LoanDelinquencyActionData> effectiveDelinquencyList, final List<LoanTransaction> chargebackTransactions) {
+++            final List<LoanDelinquencyActionData> effectiveDelinquencyList, final List<LoanTransaction> chargebackTransactions,
+++            final HolidayDetailDTO holidayDetailDTO) {
++         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
++         final CollectionData collectionData = CollectionData.template();
++@@ -231,12 +231,9 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++         long overdueDays = 0L;
++         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
++         if (overdueSinceDate != null) {
++-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
++-            if (overdueDays < 0) {
++-                overdueDays = 0L;
++-            }
+++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
++             collectionData.setPastDueDays(overdueDays);
++             collectionData.setPastDueDate(overdueSinceDate);
++             collectionData.setDelinquentDate(overdueSinceDate);
++         }
++         collectionData.setDelinquentAmount(outstandingAmount);
++         calculateAndSetDelinquentDays(collectionData, overdueDays, 0, effectiveDelinquencyList, businessDate,
++-                overdueSinceDateForCalculation);
+++                overdueSinceDateForCalculation, holidayDetailDTO);
++         return collectionData;
++@@ -343,15 +340,79 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainService {
++ 
++     private void calculateAndSetDelinquentDays(CollectionData collectionData, long overdueDays, Integer graceDays,
++-            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate) {
+++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
+++            HolidayDetailDTO holidayDetailDTO) {
++         collectionData.setDelinquentDays(0L);
++         if (overdueDays > 0) {
++-            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
++-                    businessDate);
++-            if (pausedDays == null) {
++-                pausedDays = 0L;
++-            }
+++            long pausedDays = calculatePausedDays(effectiveDelinquencyList, overdueSinceDate, businessDate, holidayDetailDTO);
++             final long delinquentDays = overdueDays - pausedDays - graceDays;
++             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
++         }
++     }
+++
+++    private HolidayDetailDTO getHolidayDetailDTO(Loan loan, LocalDate businessDate) {
+++        if (loanUtilService == null || loan == null || loan.getOfficeId() == null) {
+++            return null;
+++        }
+++        LocalDate holidayStartDate = loan.getDisbursementDate();
+++        if (holidayStartDate == null || DateUtils.isAfter(holidayStartDate, businessDate)) {
+++            holidayStartDate = businessDate;
+++        }
+++        return loanUtilService.constructHolidayDTO(loan.getOfficeId(), holidayStartDate);
+++    }
+++
+++    private long calculateOverdueDays(LocalDate overdueSinceDate, LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
+++        if (overdueSinceDate == null) {
+++            return 0L;
+++        }
+++        if (holidayDetailDTO == null) {
+++            return Math.max(DateUtils.getDifferenceInDays(overdueSinceDate, businessDate), 0L);
+++        }
+++        return HolidayUtil.getBusinessDaysBetween(overdueSinceDate, businessDate, holidayDetailDTO.isHolidayEnabled(),
+++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
+++    }
+++
+++    private LocalDate calculateDelinquentDate(LocalDate overdueSinceDate, Integer graceDays, HolidayDetailDTO holidayDetailDTO) {
+++        if (overdueSinceDate == null) {
+++            return null;
+++        }
+++        long effectiveGraceDays = graceDays == null ? 0L : graceDays.longValue();
+++        if (holidayDetailDTO == null) {
+++            return overdueSinceDate.plusDays(effectiveGraceDays);
+++        }
+++        return HolidayUtil.addBusinessDays(overdueSinceDate, effectiveGraceDays, holidayDetailDTO.isHolidayEnabled(),
+++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
+++    }
+++
+++    private long calculatePausedDays(List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate overdueSinceDate,
+++            LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
+++        if (effectiveDelinquencyList == null || effectiveDelinquencyList.isEmpty()) {
+++            return 0L;
+++        }
+++        if (holidayDetailDTO == null) {
+++            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
+++                    businessDate);
+++            return pausedDays == null ? 0L : pausedDays;
+++        }
+++        return effectiveDelinquencyList.stream().mapToLong(pausePeriod -> calculatePausedBusinessDaysWithinRange(pausePeriod,
+++                overdueSinceDate, businessDate, holidayDetailDTO)).sum();
+++    }
+++
+++    private long calculatePausedBusinessDaysWithinRange(LoanDelinquencyActionData pausePeriod, LocalDate overdueSinceDate,
+++            LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
+++        if (pausePeriod == null || overdueSinceDate == null || businessDate == null || !overdueSinceDate.isBefore(businessDate)) {
+++            return 0L;
+++        }
+++        LocalDate pauseStart = pausePeriod.getStartDate();
+++        LocalDate pauseEnd = pausePeriod.getEndDate() == null ? businessDate : pausePeriod.getEndDate();
+++        if (pauseStart == null || !pauseStart.isBefore(businessDate)) {
+++            return 0L;
+++        }
+++        if (!pauseEnd.isAfter(overdueSinceDate)) {
+++            return 0L;
+++        }
+++        LocalDate overlapStart = pauseStart.isAfter(overdueSinceDate) ? pauseStart : overdueSinceDate;
+++        LocalDate overlapEnd = pauseEnd.isBefore(businessDate) ? pauseEnd : businessDate;
+++        if (!overlapStart.isBefore(overlapEnd)) {
+++            return 0L;
+++        }
+++        return HolidayUtil.getBusinessDaysBetween(overlapStart, overlapEnd, holidayDetailDTO.isHolidayEnabled(),
+++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
+++    }
++ }
++diff --git a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++index 8db280b..d4e7aa4 100644
++--- a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+++++ b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++@@ -38,6 +38,9 @@ import org.apache.fineract.infrastructure.configuration.domain.ConfigurationDomainService;
++ import org.apache.fineract.infrastructure.core.domain.ActionContext;
++ import org.apache.fineract.infrastructure.core.domain.FineractPlatformTenant;
++ import org.apache.fineract.infrastructure.core.service.DateUtils;
++ import org.apache.fineract.infrastructure.core.service.ThreadLocalContextUtil;
+++import org.apache.fineract.organisation.holiday.domain.Holiday;
+++import org.apache.fineract.organisation.workingdays.domain.RepaymentRescheduleType;
+++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
++ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
++ import org.apache.fineract.organisation.monetary.domain.Money;
++ import org.apache.fineract.organisation.monetary.domain.MoneyHelper;
++@@ -49,6 +52,7 @@ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
++ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelperImpl;
++ import org.apache.fineract.portfolio.delinquency.service.LoanDelinquencyDomainServiceImpl;
++ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
++ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+++import org.apache.fineract.portfolio.loanaccount.data.HolidayDetailDTO;
++ import org.apache.fineract.portfolio.loanaccount.data.LoanDelinquencyData;
++@@ -58,6 +62,7 @@ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransaction;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionToRepaymentScheduleMapping;
++ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
+++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
++ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
++@@ -83,6 +88,8 @@ public class LoanDelinquencyDomainServiceTest {
++     private LoanDelinquencyDomainServiceImpl underTest;
++     @Mock
++     private LoanTransactionReadService loanTransactionReadService;
+++    @Mock
+++    private ILoanUtilService loanUtilService;
++@@ -108,6 +115,15 @@ public class LoanDelinquencyDomainServiceTest {
++         moneyHelperStatic.close();
++     }
+++
+++    private HolidayDetailDTO workingWeekHolidayDetail(LocalDate... holidayDates) {
+++        WorkingDays workingDays = WorkingDays.builder().recurrence("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR")
+++                .repaymentReschedulingType(RepaymentRescheduleType.MOVE_TO_NEXT_WORKING_DAY.getValue())
+++                .extendTermForDailyRepayments(Boolean.FALSE).extendTermForRepaymentsOnHolidays(Boolean.FALSE).build();
+++        List<Holiday> holidays = Arrays.stream(holidayDates)
+++                .map(date -> new Holiday().setName("Holiday-" + date).setFromDate(date).setToDate(date)).toList();
+++        return new HolidayDetailDTO(true, holidays, workingDays);
+++    }
++@@ -358,7 +374,7 @@ public class LoanDelinquencyDomainServiceTest {
++         List<LoanDelinquencyActionData> effectiveDelinquencyList = List.of(pauseData);
++ 
++         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
++-                loanTransactionReadService);
+++                loanTransactionReadService, loanUtilService);
++@@ -414,7 +430,7 @@ public class LoanDelinquencyDomainServiceTest {
++         List<LoanDelinquencyActionData> effectiveDelinquencyList = new DelinquencyEffectivePauseHelperImpl()
++                 .calculateEffectiveDelinquencyList(List.of(pauseAction));
++ 
++         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
++-                loanTransactionReadService);
+++                loanTransactionReadService, loanUtilService);
++@@ -438,4 +454,31 @@ public class LoanDelinquencyDomainServiceTest {
++         assertEquals(3, installmentData.size());
++         assertEquals(16L, installmentData.get(1L).getDelinquentDays());
++         assertEquals(11L, installmentData.get(2L).getDelinquentDays());
++         assertEquals(6L, installmentData.get(3L).getDelinquentDays());
++     }
+++
+++    @Test
+++    public void givenWorkingDaysAndHolidayThenOnlyBusinessDaysCountTowardsDelinquency() {
+++        LocalDate overriddenBusinessDate = LocalDate.of(2022, 1, 11);
+++        ThreadLocalContextUtil.setBusinessDates(new HashMap<>(Map.of(BusinessDateType.BUSINESS_DATE, overriddenBusinessDate)));
+++
+++        final LocalDate dueDate = LocalDate.of(2022, 1, 7);
+++        LoanRepaymentScheduleInstallment installment = new LoanRepaymentScheduleInstallment(loan, 1, dueDate.minusMonths(1), dueDate,
+++                principal, zeroAmount, zeroAmount, zeroAmount, false, new HashSet<>(), zeroAmount);
+++        List<LoanRepaymentScheduleInstallment> repaymentScheduleInstallments = List.of(installment);
+++
+++        when(loan.getId()).thenReturn(7L);
+++        when(loan.getOfficeId()).thenReturn(1L);
+++        when(loan.getDisbursementDate()).thenReturn(dueDate.minusMonths(2));
+++        when(loan.getLoanProductRelatedDetail()).thenReturn(loanProductRelatedDetail);
+++        when(loanProductRelatedDetail.getGraceOnArrearsAgeing()).thenReturn(1);
+++        when(loan.getRepaymentScheduleInstallments()).thenReturn(repaymentScheduleInstallments);
+++        when(loan.getLastLoanRepaymentScheduleInstallment()).thenReturn(installment);
+++        when(loan.getCurrency()).thenReturn(currency);
+++        when(loan.getStatus()).thenReturn(LoanStatus.ACTIVE);
+++        when(loanTransactionReadService.fetchLoanTransactionsByType(loan.getId(), null, LoanTransactionType.CHARGEBACK))
+++                .thenReturn(Collections.emptyList());
+++        when(loanUtilService.constructHolidayDTO(loan.getOfficeId(), dueDate.minusMonths(2)))
+++                .thenReturn(workingWeekHolidayDetail(LocalDate.of(2022, 1, 10)));
+++
+++        CollectionData collectionData = underTest.getOverdueCollectionData(loan, Collections.emptyList());
+++        assertEquals(1L, collectionData.getPastDueDays());
+++        assertEquals(0L, collectionData.getDelinquentDays());
+++        assertEquals(dueDate, collectionData.getPastDueDate());
+++        assertEquals(LocalDate.of(2022, 1, 11), collectionData.getDelinquentDate());
+++    }
++ }
+diff --git a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+index ad912c495..d31045922 100644
+--- a/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
++++ b/fineract-core/src/main/java/org/apache/fineract/organisation/holiday/service/HolidayUtil.java
+@@ -23,6 +23,8 @@ import java.util.List;
+ import org.apache.fineract.infrastructure.core.service.DateUtils;
+ import org.apache.fineract.organisation.holiday.domain.Holiday;
+ import org.apache.fineract.organisation.workingdays.data.AdjustedDateDetailsDTO;
++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
++import org.apache.fineract.organisation.workingdays.service.WorkingDaysUtil;
+ 
+ public final class HolidayUtil {
+ 
+@@ -31,6 +33,9 @@ public final class HolidayUtil {
+     }
+ 
+     public static LocalDate getRepaymentRescheduleDateToIfHoliday(LocalDate repaymentDate, final List<Holiday> holidays) {
++        if (holidays == null || holidays.isEmpty()) {
++            return repaymentDate;
++        }
+         for (final Holiday holiday : holidays) {
+             if (isHoliday(repaymentDate, holiday)) {
+                 repaymentDate = holiday.getRepaymentsRescheduledTo();
+@@ -44,6 +49,9 @@ public final class HolidayUtil {
+     }
+ 
+     public static Holiday getApplicableHoliday(final LocalDate repaymentDate, final List<Holiday> holidays) {
++        if (repaymentDate == null || holidays == null || holidays.isEmpty()) {
++            return null;
++        }
+         for (final Holiday holiday : holidays) {
+             if (isHoliday(repaymentDate, holiday)) {
+                 return holiday;
+@@ -56,6 +64,42 @@ public final class HolidayUtil {
+         return !DateUtils.isBefore(date, holiday.getFromDate()) && !DateUtils.isAfter(date, holiday.getToDate());
+     }
+ 
++    public static boolean isBusinessDay(LocalDate date, boolean holidayEnabled, List<Holiday> holidays, WorkingDays workingDays) {
++        final boolean holiday = holidayEnabled && isHoliday(date, holidays);
++        final boolean nonWorkingDay = workingDays != null && WorkingDaysUtil.isNonWorkingDay(workingDays, date);
++        return !holiday && !nonWorkingDay;
++    }
++
++    public static long getBusinessDaysBetween(LocalDate startInclusive, LocalDate endExclusive, boolean holidayEnabled, List<Holiday> holidays,
++            WorkingDays workingDays) {
++        if (startInclusive == null || endExclusive == null || !DateUtils.isBefore(startInclusive, endExclusive)) {
++            return 0L;
++        }
++        long businessDays = 0L;
++        for (LocalDate date = startInclusive; DateUtils.isBefore(date, endExclusive); date = date.plusDays(1)) {
++            if (isBusinessDay(date, holidayEnabled, holidays, workingDays)) {
++                businessDays++;
++            }
++        }
++        return businessDays;
++    }
++
++    public static LocalDate addBusinessDays(LocalDate startDate, long businessDays, boolean holidayEnabled, List<Holiday> holidays,
++            WorkingDays workingDays) {
++        if (startDate == null || businessDays <= 0) {
++            return startDate;
++        }
++        LocalDate result = startDate;
++        long remainingBusinessDays = businessDays;
++        while (remainingBusinessDays > 0) {
++            result = result.plusDays(1);
++            if (isBusinessDay(result, holidayEnabled, holidays, workingDays)) {
++                remainingBusinessDays--;
++            }
++        }
++        return result;
++    }
++
+     public static void updateRepaymentRescheduleDateToWorkingDayIfItIsHoliday(final AdjustedDateDetailsDTO adjustedDateDetailsDTO,
+             final Holiday holiday) {
+         if (holiday.getReScheduleType().isRescheduleToSpecificDate()) {
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+index 53d3f244d..2a302af0f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/LoanDelinquencyDomainServiceImpl.java
+@@ -27,15 +27,18 @@ import java.util.Objects;
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.apache.fineract.infrastructure.core.service.DateUtils;
++import org.apache.fineract.organisation.holiday.service.HolidayUtil;
+ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
+ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
+ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
++import org.apache.fineract.portfolio.loanaccount.data.HolidayDetailDTO;
+ import org.apache.fineract.portfolio.loanaccount.data.LoanDelinquencyData;
+ import org.apache.fineract.portfolio.loanaccount.domain.Loan;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransaction;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+@@ -45,6 +48,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+ 
+     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
+     private final LoanTransactionReadService loanTransactionReadService;
++    private final ILoanUtilService loanUtilService;
+ 
+     @Override
+     @Transactional(readOnly = true)
+@@ -53,6 +57,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+                 LoanTransactionType.CHARGEBACK);
+         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
+         final MonetaryCurrency loanCurrency = loan.getCurrency();
++        final HolidayDetailDTO holidayDetailDTO = getHolidayDetailDTO(loan, businessDate);
+         final CollectionData collectionData = CollectionData.template();
+ 
+         LocalDate overdueSinceDate = null;
+@@ -121,14 +126,10 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         long overdueDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+-            if (overdueDays < 0) {
+-                overdueDays = 0L;
+-            }
++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+-            LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
+-            collectionData.setDelinquentDate(delinquentStartDate);
++            collectionData.setDelinquentDate(calculateDelinquentDate(overdueSinceDate, graceDays, holidayDetailDTO));
+         }
+         collectionData.setDelinquentAmount(outstandingAmount);
+         collectionData.setDelinquentPrincipal(delinquentPrincipal);
+@@ -137,7 +138,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         collectionData.setDelinquentPenalty(delinquentPenalty);
+ 
+         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, holidayDetailDTO);
+ 
+         log.debug("Result: {}", collectionData);
+         return collectionData;
+@@ -148,6 +149,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         final List<LoanTransaction> chargebackTransactions = loanTransactionReadService.fetchLoanTransactionsByType(loan.getId(), null,
+                 LoanTransactionType.CHARGEBACK);
+         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
++        final HolidayDetailDTO holidayDetailDTO = getHolidayDetailDTO(loan, businessDate);
+         final CollectionData collectionData = CollectionData.template();
+         final Map<Long, CollectionData> loanInstallmentsCollectionData = new HashMap<>();
+         LocalDate overdueSinceDate = null;
+@@ -168,7 +170,7 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+             CollectionData installmentCollectionData = CollectionData.template();
+             if (!installment.isObligationsMet()) {
+                 installmentCollectionData = getInstallmentOverdueCollectionData(loan, installment, effectiveDelinquencyList,
+-                        chargebackTransactions);
++                        chargebackTransactions, holidayDetailDTO);
+                 outstandingAmount = outstandingAmount.add(installmentCollectionData.getDelinquentAmount());
+                 // Get the oldest overdue installment if exists
+                 if (DateUtils.isBefore(installment.getDueDate(), businessDate)) {
+@@ -201,23 +203,20 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         long overdueDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+-            if (overdueDays < 0) {
+-                overdueDays = 0L;
+-            }
++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+-            LocalDate delinquentStartDate = overdueSinceDate.plusDays(graceDays.longValue());
+-            collectionData.setDelinquentDate(delinquentStartDate);
++            collectionData.setDelinquentDate(calculateDelinquentDate(overdueSinceDate, graceDays, holidayDetailDTO));
+         }
+         collectionData.setDelinquentAmount(outstandingAmount);
+         calculateAndSetDelinquentDays(collectionData, overdueDays, graceDays, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, holidayDetailDTO);
+         return new LoanDelinquencyData(collectionData, loanInstallmentsCollectionData);
+     }
+ 
+     private CollectionData getInstallmentOverdueCollectionData(final Loan loan, final LoanRepaymentScheduleInstallment installment,
+-            final List<LoanDelinquencyActionData> effectiveDelinquencyList, final List<LoanTransaction> chargebackTransactions) {
++            final List<LoanDelinquencyActionData> effectiveDelinquencyList, final List<LoanTransaction> chargebackTransactions,
++            final HolidayDetailDTO holidayDetailDTO) {
+         final LocalDate businessDate = DateUtils.getBusinessLocalDate();
+         final CollectionData collectionData = CollectionData.template();
+         LocalDate overdueSinceDate;
+@@ -241,17 +240,14 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+         long overdueDays = 0L;
+         LocalDate overdueSinceDateForCalculation = overdueSinceDate;
+         if (overdueSinceDate != null) {
+-            overdueDays = DateUtils.getDifferenceInDays(overdueSinceDate, businessDate);
+-            if (overdueDays < 0) {
+-                overdueDays = 0L;
+-            }
++            overdueDays = calculateOverdueDays(overdueSinceDate, businessDate, holidayDetailDTO);
+             collectionData.setPastDueDays(overdueDays);
+             collectionData.setPastDueDate(overdueSinceDate);
+             collectionData.setDelinquentDate(overdueSinceDate);
+         }
+         collectionData.setDelinquentAmount(outstandingAmount);
+         calculateAndSetDelinquentDays(collectionData, overdueDays, 0, effectiveDelinquencyList, businessDate,
+-                overdueSinceDateForCalculation);
++                overdueSinceDateForCalculation, holidayDetailDTO);
+         return collectionData;
+ 
+     }
+@@ -347,17 +343,84 @@ public class LoanDelinquencyDomainServiceImpl implements LoanDelinquencyDomainSe
+     }
+ 
+     private void calculateAndSetDelinquentDays(CollectionData collectionData, long overdueDays, Integer graceDays,
+-            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate) {
++            List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate businessDate, LocalDate overdueSinceDate,
++            HolidayDetailDTO holidayDetailDTO) {
+         collectionData.setDelinquentDays(0L);
+         if (overdueDays > 0) {
+-            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
+-                    businessDate);
+-            if (pausedDays == null) {
+-                pausedDays = 0L;
+-            }
++            long pausedDays = calculatePausedDays(effectiveDelinquencyList, overdueSinceDate, businessDate, holidayDetailDTO);
+             final long delinquentDays = overdueDays - pausedDays - graceDays;
+             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
+         }
+     }
+ 
++    private HolidayDetailDTO getHolidayDetailDTO(Loan loan, LocalDate businessDate) {
++        if (loanUtilService == null || loan == null || loan.getOfficeId() == null) {
++            return null;
++        }
++        LocalDate holidayStartDate = loan.getDisbursementDate();
++        if (holidayStartDate == null || DateUtils.isAfter(holidayStartDate, businessDate)) {
++            holidayStartDate = businessDate;
++        }
++        return loanUtilService.constructHolidayDTO(loan.getOfficeId(), holidayStartDate);
++    }
++
++    private long calculateOverdueDays(LocalDate overdueSinceDate, LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
++        if (overdueSinceDate == null) {
++            return 0L;
++        }
++        if (holidayDetailDTO == null) {
++            return Math.max(DateUtils.getDifferenceInDays(overdueSinceDate, businessDate), 0L);
++        }
++        return HolidayUtil.getBusinessDaysBetween(overdueSinceDate, businessDate, holidayDetailDTO.isHolidayEnabled(),
++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
++    }
++
++    private LocalDate calculateDelinquentDate(LocalDate overdueSinceDate, Integer graceDays, HolidayDetailDTO holidayDetailDTO) {
++        if (overdueSinceDate == null) {
++            return null;
++        }
++        long effectiveGraceDays = graceDays == null ? 0L : graceDays.longValue();
++        if (holidayDetailDTO == null) {
++            return overdueSinceDate.plusDays(effectiveGraceDays);
++        }
++        return HolidayUtil.addBusinessDays(overdueSinceDate, effectiveGraceDays, holidayDetailDTO.isHolidayEnabled(),
++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
++    }
++
++    private long calculatePausedDays(List<LoanDelinquencyActionData> effectiveDelinquencyList, LocalDate overdueSinceDate,
++            LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
++        if (effectiveDelinquencyList == null || effectiveDelinquencyList.isEmpty()) {
++            return 0L;
++        }
++        if (holidayDetailDTO == null) {
++            Long pausedDays = delinquencyEffectivePauseHelper.getPausedDaysWithinRange(effectiveDelinquencyList, overdueSinceDate,
++                    businessDate);
++            return pausedDays == null ? 0L : pausedDays;
++        }
++        return effectiveDelinquencyList.stream().mapToLong(pausePeriod -> calculatePausedBusinessDaysWithinRange(pausePeriod,
++                overdueSinceDate, businessDate, holidayDetailDTO)).sum();
++    }
++
++    private long calculatePausedBusinessDaysWithinRange(LoanDelinquencyActionData pausePeriod, LocalDate overdueSinceDate,
++            LocalDate businessDate, HolidayDetailDTO holidayDetailDTO) {
++        if (pausePeriod == null || overdueSinceDate == null || businessDate == null || !overdueSinceDate.isBefore(businessDate)) {
++            return 0L;
++        }
++        LocalDate pauseStart = pausePeriod.getStartDate();
++        LocalDate pauseEnd = pausePeriod.getEndDate() == null ? businessDate : pausePeriod.getEndDate();
++        if (pauseStart == null || !pauseStart.isBefore(businessDate)) {
++            return 0L;
++        }
++        if (!pauseEnd.isAfter(overdueSinceDate)) {
++            return 0L;
++        }
++        LocalDate overlapStart = pauseStart.isAfter(overdueSinceDate) ? pauseStart : overdueSinceDate;
++        LocalDate overlapEnd = pauseEnd.isBefore(businessDate) ? pauseEnd : businessDate;
++        if (!overlapStart.isBefore(overlapEnd)) {
++            return 0L;
++        }
++        return HolidayUtil.getBusinessDaysBetween(overlapStart, overlapEnd, holidayDetailDTO.isHolidayEnabled(),
++                holidayDetailDTO.getHolidays(), holidayDetailDTO.getWorkingDays());
++    }
++
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+index ee5f725b6..83a93073f 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/starter/DelinquencyConfiguration.java
+@@ -47,6 +47,7 @@ import org.apache.fineract.portfolio.delinquency.validator.DelinquencyRangeParse
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepository;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepositoryWrapper;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionRepository;
++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
+ import org.apache.fineract.portfolio.loanproduct.domain.LoanProductRepository;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+@@ -100,7 +101,7 @@ public class DelinquencyConfiguration {
+     @Bean
+     @ConditionalOnMissingBean(LoanDelinquencyDomainService.class)
+     public LoanDelinquencyDomainService loanDelinquencyDomainService(DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper,
+-            LoanTransactionReadService loanTransactionReadService) {
+-        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService);
++            LoanTransactionReadService loanTransactionReadService, ILoanUtilService loanUtilService) {
++        return new LoanDelinquencyDomainServiceImpl(delinquencyEffectivePauseHelper, loanTransactionReadService, loanUtilService);
+     }
+ }
+diff --git a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+index 112d9b984..af9168610 100644
+--- a/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
++++ b/fineract-provider/src/test/java/org/apache/fineract/portfolio/deliquency/LoanDelinquencyDomainServiceTest.java
+@@ -39,9 +39,12 @@ import org.apache.fineract.infrastructure.core.domain.ActionContext;
+ import org.apache.fineract.infrastructure.core.domain.FineractPlatformTenant;
+ import org.apache.fineract.infrastructure.core.service.DateUtils;
+ import org.apache.fineract.infrastructure.core.service.ThreadLocalContextUtil;
++import org.apache.fineract.organisation.holiday.domain.Holiday;
+ import org.apache.fineract.organisation.monetary.domain.MonetaryCurrency;
+ import org.apache.fineract.organisation.monetary.domain.Money;
+ import org.apache.fineract.organisation.monetary.domain.MoneyHelper;
++import org.apache.fineract.organisation.workingdays.domain.RepaymentRescheduleType;
++import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
+ import org.apache.fineract.portfolio.delinquency.domain.DelinquencyAction;
+ import org.apache.fineract.portfolio.delinquency.domain.LoanDelinquencyAction;
+ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePauseHelper;
+@@ -49,6 +52,7 @@ import org.apache.fineract.portfolio.delinquency.helper.DelinquencyEffectivePaus
+ import org.apache.fineract.portfolio.delinquency.service.LoanDelinquencyDomainServiceImpl;
+ import org.apache.fineract.portfolio.delinquency.validator.LoanDelinquencyActionData;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
++import org.apache.fineract.portfolio.loanaccount.data.HolidayDetailDTO;
+ import org.apache.fineract.portfolio.loanaccount.data.LoanDelinquencyData;
+ import org.apache.fineract.portfolio.loanaccount.domain.Loan;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
+@@ -56,6 +60,7 @@ import org.apache.fineract.portfolio.loanaccount.domain.LoanStatus;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransaction;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionToRepaymentScheduleMapping;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanTransactionType;
++import org.apache.fineract.portfolio.loanaccount.service.ILoanUtilService;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanTransactionReadService;
+ import org.apache.fineract.portfolio.loanproduct.domain.LoanProduct;
+ import org.apache.fineract.portfolio.loanproduct.domain.LoanProductRelatedDetail;
+@@ -89,6 +94,8 @@ public class LoanDelinquencyDomainServiceTest {
+     private LoanDelinquencyDomainServiceImpl underTest;
+     @Mock
+     private LoanTransactionReadService loanTransactionReadService;
++    @Mock
++    private ILoanUtilService loanUtilService;
+ 
+     private LocalDate businessDate;
+     private MonetaryCurrency currency;
+@@ -118,6 +125,15 @@ public class LoanDelinquencyDomainServiceTest {
+         moneyHelperStatic.close();
+     }
+ 
++    private HolidayDetailDTO workingWeekHolidayDetail(LocalDate... holidayDates) {
++        WorkingDays workingDays = WorkingDays.builder().recurrence("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR")
++                .repaymentReschedulingType(RepaymentRescheduleType.MOVE_TO_NEXT_WORKING_DAY.getValue())
++                .extendTermForDailyRepayments(Boolean.FALSE).extendTermForRepaymentsOnHolidays(Boolean.FALSE).build();
++        List<Holiday> holidays = Arrays.stream(holidayDates).map(date -> new Holiday().setName("Holiday-" + date).setFromDate(date).setToDate(date))
++                .toList();
++        return new HolidayDetailDTO(true, holidays, workingDays);
++    }
++
+     @Test
+     public void givenLoanAccountWithoutOverdueThenCalculateDelinquentData() {
+         // given
+@@ -353,7 +369,7 @@ public class LoanDelinquencyDomainServiceTest {
+         List<LoanDelinquencyActionData> effectiveDelinquencyList = List.of(pauseData);
+ 
+         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
+-                loanTransactionReadService);
++                loanTransactionReadService, loanUtilService);
+ 
+         LoanDelinquencyData collectionData = service.getLoanDelinquencyData(loan, effectiveDelinquencyList);
+ 
+@@ -409,7 +425,7 @@ public class LoanDelinquencyDomainServiceTest {
+                 .calculateEffectiveDelinquencyList(List.of(pauseAction));
+ 
+         LoanDelinquencyDomainServiceImpl service = new LoanDelinquencyDomainServiceImpl(new DelinquencyEffectivePauseHelperImpl(),
+-                loanTransactionReadService);
++                loanTransactionReadService, loanUtilService);
+ 
+         LoanDelinquencyData delinquencyData = service.getLoanDelinquencyData(localLoan, effectiveDelinquencyList);
+ 
+@@ -424,4 +440,36 @@ public class LoanDelinquencyDomainServiceTest {
+         assertEquals(11L, installmentData.get(2L).getDelinquentDays());
+         assertEquals(6L, installmentData.get(3L).getDelinquentDays());
+     }
++
++    @Test
++    public void givenWorkingDaysAndHolidayThenOnlyBusinessDaysCountTowardsDelinquency() {
++        LocalDate overriddenBusinessDate = LocalDate.of(2022, 1, 11);
++        ThreadLocalContextUtil.setBusinessDates(new HashMap<>(Map.of(BusinessDateType.BUSINESS_DATE, overriddenBusinessDate)));
++
++        final LocalDate dueDate = LocalDate.of(2022, 1, 7);
++        LoanRepaymentScheduleInstallment installment = new LoanRepaymentScheduleInstallment(loan, 1, dueDate.minusMonths(1), dueDate,
++                principal, zeroAmount, zeroAmount, zeroAmount, false, new HashSet<>(), zeroAmount);
++        List<LoanRepaymentScheduleInstallment> repaymentScheduleInstallments = List.of(installment);
++
++        when(loan.getId()).thenReturn(7L);
++        when(loan.getOfficeId()).thenReturn(1L);
++        when(loan.getDisbursementDate()).thenReturn(dueDate.minusMonths(2));
++        when(loan.getLoanProductRelatedDetail()).thenReturn(loanProductRelatedDetail);
++        when(loanProductRelatedDetail.getGraceOnArrearsAgeing()).thenReturn(1);
++        when(loan.getRepaymentScheduleInstallments()).thenReturn(repaymentScheduleInstallments);
++        when(loan.getLastLoanRepaymentScheduleInstallment()).thenReturn(installment);
++        when(loan.getCurrency()).thenReturn(currency);
++        when(loan.getStatus()).thenReturn(LoanStatus.ACTIVE);
++        when(loanTransactionReadService.fetchLoanTransactionsByType(loan.getId(), null, LoanTransactionType.CHARGEBACK))
++                .thenReturn(Collections.emptyList());
++        when(loanUtilService.constructHolidayDTO(loan.getOfficeId(), dueDate.minusMonths(2)))
++                .thenReturn(workingWeekHolidayDetail(LocalDate.of(2022, 1, 10)));
++
++        CollectionData collectionData = underTest.getOverdueCollectionData(loan, Collections.emptyList());
++
++        assertEquals(1L, collectionData.getPastDueDays());
++        assertEquals(0L, collectionData.getDelinquentDays());
++        assertEquals(dueDate, collectionData.getPastDueDate());
++        assertEquals(LocalDate.of(2022, 1, 11), collectionData.getDelinquentDate());
++    }
+ }

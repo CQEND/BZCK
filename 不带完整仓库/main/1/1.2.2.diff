@@ -1,0 +1,243 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
+index 4a5dfb67d..546423852 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/ChargeTaxDetailDTO.java
+@@ -27,14 +27,11 @@ import lombok.NoArgsConstructor;
+  * Carries the pro-rated tax amount for a single TaxComponent when a LoanCharge is (partially) paid. Used to propagate
+  * tax details from the domain layer to the accounting bridge.
+  */
+-@Data
+-@NoArgsConstructor
+-@AllArgsConstructor
+-public class ChargeTaxDetailDTO {
+-
++public record ChargeTaxDetailDTO(
+     /** GL account to credit (tax liability account from TaxComponent.creditAccount). */
+-    private Long creditAccountId;
++    Long creditAccountId,
+ 
+     /** Pro-rated tax amount for this component in this payment. */
+-    private BigDecimal amount;
++    BigDecimal amount
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+index 5b75fa9f1..2594b3f40 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanChargePaidDetail.java
+@@ -21,27 +21,9 @@ package org.apache.fineract.portfolio.loanaccount.data;
+ import org.apache.fineract.organisation.monetary.domain.Money;
+ import org.apache.fineract.portfolio.loanaccount.domain.LoanRepaymentScheduleInstallment;
+ 
+-public class LoanChargePaidDetail {
+-
+-    private final Money amount;
+-    private final LoanRepaymentScheduleInstallment installment;
+-    private final boolean isFeeCharge;
+-
+-    public LoanChargePaidDetail(Money amount, LoanRepaymentScheduleInstallment installment, boolean isFeeCharge) {
+-        this.amount = amount;
+-        this.installment = installment;
+-        this.isFeeCharge = isFeeCharge;
+-    }
+-
+-    public Money getAmount() {
+-        return this.amount;
+-    }
+-
+-    public LoanRepaymentScheduleInstallment getInstallment() {
+-        return this.installment;
+-    }
+-
+-    public boolean isFeeCharge() {
+-        return this.isFeeCharge;
+-    }
++public record LoanChargePaidDetail(
++    Money amount,
++    LoanRepaymentScheduleInstallment installment,
++    boolean isFeeCharge
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+index 22daadc5c..466f6b7cf 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRefundRequestData.java
+@@ -22,18 +22,15 @@ import java.math.BigDecimal;
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ 
+-@Data
+-@AllArgsConstructor
+-public class LoanRefundRequestData {
+-
+-    private final BigDecimal principal;
+-    private final BigDecimal interest;
+-    private final BigDecimal feeCharges;
+-    private final BigDecimal penaltyCharges;
+-    private final BigDecimal overpayment;
++public record LoanRefundRequestData(
++    BigDecimal principal,
++    BigDecimal interest,
++    BigDecimal feeCharges,
++    BigDecimal penaltyCharges,
++    BigDecimal overpayment
++) {
+ 
+     public BigDecimal getTotalAmount() {
+         return principal.add(interest).add(feeCharges).add(penaltyCharges);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+index ad06d82e8..e927e949d 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/LoanRepaymentScheduleInstallmentData.java
+@@ -25,24 +25,18 @@ import java.time.LocalDate;
+ import lombok.AllArgsConstructor;
+ import lombok.Getter;
+ 
+-@AllArgsConstructor
+-@Getter
+-public final class LoanRepaymentScheduleInstallmentData implements Serializable {
++public record LoanRepaymentScheduleInstallmentData(
++    Long id,
++    Integer installmentId,
++    LocalDate date,
++    BigDecimal amount
++) implements Serializable {
+ 
+     @Serial
+     private static final long serialVersionUID = 1L;
+ 
+-    private Long id;
+-
+-    private Integer installmentId;
+-
+-    private LocalDate date;
+-
+-    private BigDecimal amount;
+-
+     public static LoanRepaymentScheduleInstallmentData instanceOf(final Long id, final Integer installmentId, final LocalDate date,
+             final BigDecimal amount) {
+         return new LoanRepaymentScheduleInstallmentData(id, installmentId, date, amount);
+     }
+-
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+index be643496f..d0e8acb66 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/PaidInAdvanceData.java
+@@ -22,10 +22,7 @@ import java.math.BigDecimal;
+ import lombok.Getter;
+ import lombok.RequiredArgsConstructor;
+ 
+-@Getter
+-@RequiredArgsConstructor
+-public class PaidInAdvanceData {
+-
+-    private final BigDecimal paidInAdvance;
+-
++public record PaidInAdvanceData(
++    BigDecimal paidInAdvance
++) {
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+index 6e9ede09b..e29b353dc 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/UnpaidChargeData.java
+@@ -25,17 +25,17 @@ import lombok.Getter;
+ /**
+  * Immutable data object representing the total unpaid charge details
+  */
+-@Getter
+-public class UnpaidChargeData {
++public record UnpaidChargeData(
++    Long chargeId,
++    String chargeName,
++    BigDecimal outstandingAmount
++) {
+ 
+     private static final String NULL_VALUE_IS_NOT_ALLOWED = "Null value is not allowed";
+-    private final Long chargeId;
+-    private final String chargeName;
+-    private final BigDecimal outstandingAmount;
+ 
+-    public UnpaidChargeData(Long chargeId, String chargeName, BigDecimal outstandingAmount) {
+-        this.chargeId = Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.chargeName = Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
+-        this.outstandingAmount = Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
++    public UnpaidChargeData {
++        Objects.requireNonNull(chargeId, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(chargeName, NULL_VALUE_IS_NOT_ALLOWED);
++        Objects.requireNonNull(outstandingAmount, NULL_VALUE_IS_NOT_ALLOWED);
+     }
+ }
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/transactionprocessor/AbstractLoanRepaymentScheduleTransactionProcessor.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/transactionprocessor/AbstractLoanRepaymentScheduleTransactionProcessor.java
+index 9b96bccaf..0a066892c 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/transactionprocessor/AbstractLoanRepaymentScheduleTransactionProcessor.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/transactionprocessor/AbstractLoanRepaymentScheduleTransactionProcessor.java
+@@ -147,8 +147,8 @@ public abstract class AbstractLoanRepaymentScheduleTransactionProcessor implemen
+                 Money unprocessed = loanTransaction.getAmount(currency);
+                 for (LoanChargePaidDetail chargePaidDetail : chargePaidDetails) {
+                     final List<LoanRepaymentScheduleInstallment> processInstallments = new ArrayList<>(1);
+-                    processInstallments.add(chargePaidDetail.getInstallment());
+-                    Money processAmt = chargePaidDetail.getAmount();
++                    processInstallments.add(chargePaidDetail.installment());
++                    Money processAmt = chargePaidDetail.amount();
+                     if (processAmt.isGreaterThan(unprocessed)) {
+                         processAmt = unprocessed;
+                     }
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/account/service/AccountTransfersWritePlatformServiceImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/account/service/AccountTransfersWritePlatformServiceImpl.java
+index 8fce2c4ec..dca0ab832 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/account/service/AccountTransfersWritePlatformServiceImpl.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/account/service/AccountTransfersWritePlatformServiceImpl.java
+@@ -582,7 +582,7 @@ public class AccountTransfersWritePlatformServiceImpl implements AccountTransfer
+         final Long fromLoanAccountId = command.longValueOfParameterNamed(fromAccountIdParamName);
+         final Loan fromLoanAccount = this.loanAccountAssembler.assembleFrom(fromLoanAccountId);
+ 
+-        BigDecimal overpaid = this.loanReadPlatformService.retrieveTotalPaidInAdvance(fromLoanAccountId).getPaidInAdvance();
++        BigDecimal overpaid = this.loanReadPlatformService.retrieveTotalPaidInAdvance(fromLoanAccountId).paidInAdvance();
+         final boolean backdatedTxnsAllowedTill = false;
+ 
+         if (overpaid == null || overpaid.compareTo(BigDecimal.ZERO) == 0 || transactionAmount.floatValue() > overpaid.floatValue()) {
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanAccountDomainServiceJpa.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanAccountDomainServiceJpa.java
+index 0b7814337..3cb1bcbdb 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanAccountDomainServiceJpa.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/domain/LoanAccountDomainServiceJpa.java
+@@ -934,8 +934,8 @@ public class LoanAccountDomainServiceJpa implements LoanAccountDomainService {
+         final BigDecimal refundAmount = loanRefundRequest.getTotalAmount();
+ 
+         final LoanTransaction interestRefundTransaction = LoanTransaction.interestRefund(loan, loan.getOffice(), refundAmount,
+-                loanRefundRequest.getPrincipal(), loanRefundRequest.getInterest(), loanRefundRequest.getFeeCharges(),
+-                loanRefundRequest.getPenaltyCharges(), paymentDetail, transactionDate, externalIdFactory.create());
++                loanRefundRequest.principal(), loanRefundRequest.interest(), loanRefundRequest.feeCharges(),
++                loanRefundRequest.penaltyCharges(), paymentDetail, transactionDate, externalIdFactory.create());
+         interestRefundTransaction.updateLoan(loan);
+         loanAccountService.saveLoanTransactionWithDataIntegrityViolationChecks(interestRefundTransaction);
+         loan.addLoanTransaction(interestRefundTransaction);
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceImpl.java
+index 42cafd0ca..45199bcec 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceImpl.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanReadPlatformServiceImpl.java
+@@ -1972,7 +1972,7 @@ public class LoanReadPlatformServiceImpl implements LoanReadPlatformService, Loa
+         final Collection<PaymentTypeData> paymentOptions = this.paymentTypeReadPlatformService.retrieveAllPaymentTypes();
+         final Loan loan = this.loanRepositoryWrapper.findOneWithNotFoundDetection(loanId, true);
+         return retrieveRefundTemplate(loanId, LoanTransactionType.REFUND_FOR_ACTIVE_LOAN, paymentOptions, loan.getCurrency(),
+-                retrieveTotalPaidInAdvance(loan.getId()).getPaidInAdvance(), loan.getNetDisbursalAmount(), loan.getExternalId());
++                retrieveTotalPaidInAdvance(loan.getId()).paidInAdvance(), loan.getNetDisbursalAmount(), loan.getExternalId());
+     }
+ 
+     @Override
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+index 50dc5a4c0..8a0aece8e 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+@@ -2607,7 +2607,7 @@ public class LoanWritePlatformServiceJpaRepositoryImpl implements LoanWritePlatf
+     }
+ 
+     private void checkIfLoanIsPaidInAdvance(final Long loanId, final BigDecimal transactionAmount) {
+-        BigDecimal overpaid = this.loanReadPlatformService.retrieveTotalPaidInAdvance(loanId).getPaidInAdvance();
++        BigDecimal overpaid = this.loanReadPlatformService.retrieveTotalPaidInAdvance(loanId).paidInAdvance();
+ 
+         if (overpaid == null || overpaid.compareTo(BigDecimal.ZERO) == 0 || transactionAmount.floatValue() > overpaid.floatValue()) {
+             if (overpaid == null) {

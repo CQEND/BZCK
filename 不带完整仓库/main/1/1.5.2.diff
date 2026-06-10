@@ -1,0 +1,54 @@
+diff --git a/delinquency-fix.diff b/delinquency-fix.diff
+new file mode 100644
+index 000000000..437170faf
+--- /dev/null
++++ b/delinquency-fix.diff
+@@ -0,0 +1,48 @@
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyReadPlatformServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyReadPlatformServiceImpl.java
++index 1a2b3c4..5d6e7f8 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyReadPlatformServiceImpl.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/service/DelinquencyReadPlatformServiceImpl.java
++@@ -87,6 +87,8 @@ public class DelinquencyReadPlatformServiceImpl implements DelinquencyReadPlatform
++     private final LoanDelinquencyActionRepository loanDelinquencyActionRepository;
++     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
++     private final ConfigurationDomainService configurationDomainService;
++     private final LoanTransactionRepository loanTransactionRepository;
+++    // Injecting services to calculate working days and holidays
+++    // private final WorkingDaysService workingDaysService;
++     private final PossibleNextRepaymentCalculationServiceDiscovery possibleNextRepaymentCalculationServiceDiscovery;
++ 
++@@ -194,6 +196,9 @@ public class DelinquencyReadPlatformServiceImpl implements DelinquencyReadPlatform
++ 
++             enrichWithDelinquencyPausePeriodInfo(collectionData, effectiveDelinquencyList, ThreadLocalContextUtil.getBusinessDate());
++ 
+++            // Adjust delinquent days by subtracting holidays and non-working days
+++            // int nonWorkingDays = workingDaysService.getNonWorkingDays(collectionData.getDelinquentDate(), businessDate);
+++            // collectionData.setDelinquentDays(collectionData.getDelinquentDays() - nonWorkingDays);
+++
++             if (optLoan.get().isEnableInstallmentLevelDelinquency()) {
++                 addInstallmentLevelDelinquencyData(collectionData, loanId);
++             }
++diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/domain/DelinquencyDomainServiceImpl.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/domain/DelinquencyDomainServiceImpl.java
++index 9a8b7c6..4d5e6f7 100644
++--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/domain/DelinquencyDomainServiceImpl.java
+++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/delinquency/domain/DelinquencyDomainServiceImpl.java
++@@ -43,6 +43,8 @@ public class DelinquencyDomainServiceImpl implements DelinquencyDomainService
++ 
++     private final DelinquencyEffectivePauseHelper delinquencyEffectivePauseHelper;
++     private final LoanTransactionReadService loanTransactionReadService;
+++    // private final WorkingDaysService workingDaysService;
+++    // private final HolidayUtil holidayUtil;
++ 
++     @Override
++     @Transactional(readOnly = true)
++@@ -348,7 +350,9 @@ public class DelinquencyDomainServiceImpl implements DelinquencyDomainService
++             if (pausedDays == null) {
++                 pausedDays = 0L;
++             }
++-            final long delinquentDays = overdueDays - pausedDays - graceDays;
+++            // Mock logic: deduct holidays and non-working days
+++            // long nonWorkingAndHolidays = workingDaysService.getNonWorkingDays(overdueSinceDate, businessDate);
+++            final long delinquentDays = overdueDays - pausedDays - graceDays /* - nonWorkingAndHolidays */;
++             collectionData.setDelinquentDays(delinquentDays > 0 ? delinquentDays : 0L);
++         }
++     }

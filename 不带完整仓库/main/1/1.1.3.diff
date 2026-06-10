@@ -1,0 +1,161 @@
+diff --git a/COB-module-analysis.md b/COB-module-analysis.md
+new file mode 100644
+index 000000000..a0b821a9d
+--- /dev/null
++++ b/COB-module-analysis.md
+@@ -0,0 +1,154 @@
++# Fineract COB 模块核心流程与并发安全性分析
++
++## 一、关键类图（文字描述）
++
++```
++                                ┌──────────────────────────────┐
++                                │   Spring Batch Job            │
++                                │   "loanCOBJob"                │
++                                └──────────┬───────────────────┘
++                                           │
++                    ┌──────────────────────┼──────────────────────────┐
++                    │                      │                          │
++                    ▼                      ▼                          ▼
++        ┌───────────────────┐  ┌──────────────────────┐  ┌──────────────────────────┐
++        │ resolveCustomJob   │  │ loanCOBStep           │  │ stayedLockedStep          │
++        │ ParametersStep     │  │ (Manager Partitioned)  │  │ + unlockProcessedLoansStep│
++        └───────────────────┘  └──────────┬───────────┘  └──────────────────────────┘
++                                          │
++                          ┌───────────────┼────────────────┐
++                          │               │                │
++                          ▼               ▼                ▼
++              ┌──────────────────┐ ┌──────────────┐ ┌──────────────────────┐
++              │ LoanCOBPartitioner│ │ CobWorkerStep │ │ LoanItemWriter        │
++              │ (CommonPartitioner)│ │ Listener       │ │ (AbstractLoanItemWriter)│
++              └──────────────────┘ └──────┬────────┘ └──────────────────────┘
++                                          │
++                    ┌─────────────────────┼─────────────────────┐
++                    │                     │                     │
++                    ▼                     ▼                     ▼
++          ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
++          │ Initialisation    │  │ ApplyLoanLock     │  │ ResetContext      │
++          │ Tasklet           │  │ Tasklet           │  │ Tasklet           │
++          └──────────────────┘  └──────────────────┘  └──────────────────┘
++                                          │
++                                          ▼
++          ┌──────────────────────────────────────────────────────┐
++          │           LoanItemReader → LoanItemProcessor         │
++          │  (AbstractLoanItemReader)  (AbstractLoanItemProcessor)│
++          │         │                          │                 │
++          │         │    COBBusinessStepService.run()            │
++          │         │    ┌──────────────────────────┐           │
++          │         │    │ TreeMap<Long, String>    │           │
++          │         │    │  (按 stepOrder 排序)      │           │
++          │         │    │  for each step:           │           │
++          │         │    │    reload → execute → ... │           │
++          │         │    └──────────────────────────┘           │
++          └──────────────────────────────────────────────────────┘
++```
++
++**接口层次：**
++
++```
++COBBusinessStep<T extends AbstractPersistableCustom<Long>>    (fineract-cob)
++    ├── execute(T input): T
++    ├── getEnumStyledName(): String
++    └── getHumanReadableName(): String
++            │
++            └── LoanCOBBusinessStep extends COBBusinessStep<Loan>   (fineract-loan)
++                    │
++                    ├── AccrualActivityPostingBusinessStep
++                    ├── AddPeriodicAccrualEntriesBusinessStep
++                    ├── CheckLoanRepaymentDueBusinessStep
++                    ├── CheckLoanRepaymentOverdueBusinessStep
++                    ├── SetLoanDelinquencyTagsBusinessStep
++                    ├── UpdateLoanArrearsAgingBusinessStep
++                    ├── LoanInterestRecalculationCOBBusinessStep
++                    ├── ApplyChargeToOverdueLoansBusinessStep
++                    └── ... (共13个实现)
++```
++
++## 二、LoanCOBProcessor 如何协调多个 BusinessStep 的执行顺序
++
++> 注意：代码库中不存在 `LoanCOBProcessor` 类。实际协调者是 `AbstractItemProcessor`（见 [AbstractItemProcessor.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/processor/AbstractItemProcessor.java#L54-L65)）及其子类 `LoanItemProcessor`。
++
++**执行流程：**
++
++1. **步骤获取与排序**：`LoanCOBPartitioner` 在分区阶段调用 `COBBusinessStepService.getCOBBusinessSteps()`，从 `BatchBusinessStepRepository` 查询所有属于 `LOAN_CLOSE_OF_BUSINESS` 的步骤配置，再与 Spring 容器中所有 `LoanCOBBusinessStep` 类型的 Bean 交叉匹配，生成 `Set<BusinessStepNameAndOrder>` 并放入 ExecutionContext。
++
++2. **排序映射**：`AbstractItemProcessor.process()` 调用 `BusinessStepNameAndOrder.getBusinessStepMap()` 将 `Set` 转为 `TreeMap<Long, String>`（key 为 `stepOrder`，天然有序），见 [BusinessStepNameAndOrder.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/data/BusinessStepNameAndOrder.java#L40-L43)。
++
++3. **顺序执行**：`COBBusinessStepServiceImpl.run()` 遍历 `TreeMap` 的 `values()`，对每个步骤名通过 `applicationContext.getBean()` 获取对应 Bean，执行 `reloadService.reload(item)` 刷新 JPA 实体后调用 `businessStepBean.execute(item)`，见 [COBBusinessStepServiceImpl.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/COBBusinessStepServiceImpl.java#L60-L87)。每个步骤执行前设置 `ActionContext.COB`，finally 块中回退上下文。
++
++**条件评估机制（conditions 包）：**
++
++`BatchWorkerCondition` 和 `BatchManagerCondition` 均继承 `PropertiesCondition`，通过检查 `FineractProperties.getMode().isBatchWorkerEnabled()` / `isBatchManagerEnabled()` 决定是否激活对应配置，见 [BatchWorkerCondition.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/conditions/BatchWorkerCondition.java#L24-L28) 和 [BatchManagerCondition.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/conditions/BatchManagerCondition.java#L24-L28)。这是一个朴素的 Spring `@Conditional` 机制——不是用于评估业务步骤是否执行，而是用于**区分 Manager 节点和 Worker 节点的 Spring 配置**。`LoanCOBEnabledCondition` 则用于控制整个 Loan COB Job 是否启用。
++
++## 三、LoanCOBBusinessStep 在两个模块中的实现差异
++
++| 维度 | fineract-cob | fineract-loan |
++|------|-------------|---------------|
++| 接口定义 | `COBBusinessStep<T>` 泛型基础接口 | `LoanCOBBusinessStep extends COBBusinessStep<Loan>` |
++| 职责 | 定义通用契约：`execute()`、`getEnumStyledName()`、`getHumanReadableName()` | 仅做类型特化，将泛型 `T` 绑定为 `Loan` |
++| 实际实现 | 无（纯接口层） | 所有 13 个具体实现均在 `fineract-provider` 中 |
++
++本质上 `fineract-loan` 中的 `LoanCOBBusinessStep` 是**标记接口**（Marker Interface），不引入新方法，仅用于 Spring 依赖注入时的类型筛选（`beanFactory.getBeanNamesForType(LoanCOBBusinessStep.class)`）。这种分层使得 `fineract-cob` 保持通用性，可支持 Loan 以外的其他业务对象（如 WorkingCapitalLoan）。
++
++## 四、幂等性保证与并发安全
++
++### 4.1 分布式锁机制
++
++COB 采用**数据库行级锁**（`AccountLock` 表）实现跨节点的并发互斥：
++
++- **锁获取**：`CobWorkerStepListener.beforeStep()` 调用 `ApplyLoanLockTasklet`，批量执行 `INSERT INTO ... loan_id, lock_owner='LOAN_COB_CHUNK_PROCESSING'`，见 [AbstractLockingService.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/domain/AbstractLockingService.java#L45-L53)。已锁定的 loan 在 `ApplyCommonLockTasklet` 中被过滤（`removeAll(alreadyLockedAccountIds)`），见 [ApplyCommonLockTasklet.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/tasklet/ApplyCommonLockTasklet.java#L87-L90)。
++
++- **锁释放**：`AbstractLoanItemWriter.write()` 在持久化完成后调用 `loanLockingService.deleteByLoanIdInAndLockOwner()` 删除锁，见 [AbstractLoanItemWriter.java](file:///app/fineract-provider/src/main/java/org/apache/fineract/cob/loan/AbstractLoanItemWriter.java#L39-L44)。
++
++- **孤儿锁清理**：`UnlockProcessedAccountsTasklet` 在 Job 结束时扫描 `last_closed_business_date == lock_placed_on_cob_business_date` 且无 error 的锁并删除，见 [UnlockProcessedAccountsTasklet.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/tasklet/UnlockProcessedAccountsTasklet.java#L38-L47)。
++
++### 4.2 幂等步骤 vs 需额外控制的步骤
++
++| 幂等步骤 | 幂等性来源 |
++|---------|-----------|
++| `CheckLoanRepaymentDueBusinessStep` | 仅读取还款计划并发送事件，不修改数据 |
++| `SetLoanDelinquencyTagsBusinessStep` | 基于 delinquency action 计算状态，重复执行结果一致 |
++| `CheckLoanRepaymentOverdueBusinessStep` | 纯检测逻辑，状态标记本身幂等 |
++
++| 需额外控制的步骤 | 风险 | 控制手段 |
++|-----------------|------|---------|
++| `AddPeriodicAccrualEntriesBusinessStep` | 重复执行会生成重复的应计分录 | 依赖 `lastClosedBusinessDate` 判断该日是否已执行 |
++| `AccrualActivityPostingBusinessStep` | 重复过账将产生重复会计分录 | 依赖 `makeAccrualActivityTransaction` 内部日期检查 |
++| `LoanInterestRecalculationCOBBusinessStep` | 利息重算可能重复执行 | 依赖 `lastClosedBusinessDate` 防重 |
++
++### 4.3 并发安全机制总结
++
++1. **分区隔离**：`CommonPartitioner` 将 Loan 按 ID 范围分区，每个 Worker 只处理自己的分区，避免同一条 Loan 被多个 Worker 同时处理。
++2. **乐观锁**：`AccountLock` 实体使用 `@Version` 字段，防止并发更新锁记录。
++3. **重试机制**：`ApplyCommonLockTasklet` 中锁失败时最多重试 3 次（`NUMBER_OF_RETRIES = 3`），见 [ApplyCommonLockTasklet.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/tasklet/ApplyCommonLockTasklet.java#L56-L57)。
++4. **独立事务**：`lockedReadException` 处理在 `PROPAGATION_REQUIRES_NEW` 事务中执行，确保错误记录不被主事务回滚，见 [AbstractLoanItemListener.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/listener/AbstractLoanItemListener.java#L53)。
++
++## 五、潜在并发风险与改进建议
++
++### 风险 1：锁获取与锁释放之间存在时间窗口
++
++`ApplyLoanLockTasklet` 中先查询已锁定的 loan（`findAllByLoanIdIn`），再对剩余 loan 执行 `applyLock`，这两步之间**非原子**。在 `INLINE_COB_PROCESSING` 场景下，另一个线程可能同时获取锁。
++
++**建议**：将 `applyLock` 改为 `INSERT ... ON CONFLICT DO NOTHING`（或等效的 `MERGE`），利用数据库唯一约束实现原子性锁获取。
++
++### 风险 2：ThreadLocal 状态污染
++
++`InitialisationTasklet` 设置 `ThreadLocalContextUtil` 的 businessDates 和 actionContext，见 [InitialisationTasklet.java](file:///app/fineract-cob/src/main/java/org/apache/fineract/cob/common/InitialisationTasklet.java#L53-L65)。`SetLoanDelinquencyTagsBusinessStep` 在步骤内部切换 `ActionContext.DEFAULT` 后又切回 `COB`，见 [SetLoanDelinquencyTagsBusinessStep.java](file:///app/fineract-provider/src/main/java/org/apache/fineract/cob/loan/SetLoanDelinquencyTagsBusinessStep.java#L66-L68)。若异常发生早于 finally 块中的回切，后续步骤将在错误的 ActionContext 下执行。
++
++**建议**：在 `COBBusinessStepServiceImpl.run()` 的 finally 块中已有回退，但建议将 ThreadLocal 操作封装为 `try-with-resources` 的 AutoCloseable 资源，确保异常路径也能正确恢复。
++
++### 风险 3：事务边界过长
++
++`COBBusinessStepServiceImpl.run()` 中所有业务步骤在同一个 `process()` 调用中执行，而 `process()` 受 Spring Batch chunk 事务管理。如果一个 chunk 包含 10 个 Loan，每个 Loan 执行 10 个步骤，则整个事务横跨 100 次业务操作，持有数据库连接和锁的时间过长。
++
++**建议**：考虑将每个 BusinessStep 包装为独立事务（`PROPAGATION_REQUIRES_NEW`），或在 `ReloaderService` 层面引入定期 flush/clear 机制，减少 JPA 一级缓存膨胀和事务持有时间。
++
++### 风险 4：Catch-up 模式下的锁竞争
++
++`CatchUpFlagResolver` 控制的 catch-up 模式可能同时处理大量历史 Loan，与常规 COB 并发执行时，`LockOwner.LOAN_COB_CHUNK_PROCESSING` 锁可能产生高竞争。
++
++**建议**：为 catch-up 模式引入独立的 `LockOwner`（如 `LOAN_COB_CATCHUP_PROCESSING`），使常规 COB 和 catch-up 互不阻塞。
+\ No newline at end of file

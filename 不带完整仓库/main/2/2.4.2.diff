@@ -1,0 +1,86 @@
+diff --git a/docs/settings.rst b/docs/settings.rst
+index 863156b..8c1cba5 100644
+--- a/docs/settings.rst
++++ b/docs/settings.rst
+@@ -35,12 +35,13 @@ The following are known to be effective:
+ 
+ - ``SCHEMA_COERCE_PATH_PK``
+ 
+-Example: SwaggerUI settings
+----------------------------
++Example: SwaggerUI and Redoc settings
++-------------------------------------
+ 
+ We currently support passing through all basic SwaggerUI `configuration parameters <https://swagger.io/docs/open-source-tools/swagger-ui/usage/configuration/>`_.
+ For more customization options (e.g. CSS, JS functions), you can extend or override the
+ `SwaggerUI template <https://github.com/tfranzel/drf-spectacular/blob/master/drf_spectacular/templates/drf_spectacular/swagger_ui.html>`_
++or the `Redoc template <https://github.com/tfranzel/drf-spectacular/blob/master/drf_spectacular/templates/drf_spectacular/redoc.html>`_
+ in your project files.
+ 
+ .. code:: python
+@@ -58,5 +59,8 @@ in your project files.
+         # available SwaggerUI versions: https://github.com/swagger-api/swagger-ui/releases
+         "SWAGGER_UI_DIST": "https://cdn.jsdelivr.net/npm/swagger-ui-dist@latest", # default
+         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
++        
++        # Redoc UI template override
++        "REDOC_TEMPLATE_NAME": "drf_spectacular/redoc.html", # default
+         ...
+     }
+diff --git a/drf_spectacular/settings.py b/drf_spectacular/settings.py
+index 6650a77..155aaf8 100644
+--- a/drf_spectacular/settings.py
++++ b/drf_spectacular/settings.py
+@@ -76,6 +76,7 @@ SPECTACULAR_DEFAULTS: Dict[str, Any] = {
+     # The settings are serialized with json.dumps(). If you need customized JS, use a
+     # string instead. The string must then contain valid JS and is passed unchanged.
+     'REDOC_UI_SETTINGS': {},
++    'REDOC_TEMPLATE_NAME': 'drf_spectacular/redoc.html',
+ 
+     # CDNs for swagger and redoc. You can change the version or even host your
+     # own depending on your requirements. For self-hosting, have a look at
+diff --git a/drf_spectacular/views.py b/drf_spectacular/views.py
+index c81a4b3..5b3ce74 100644
+--- a/drf_spectacular/views.py
++++ b/drf_spectacular/views.py
+@@ -241,6 +241,9 @@ class SpectacularRedocView(APIView):
+     template_name: str = 'drf_spectacular/redoc.html'
+     title: Optional[str] = spectacular_settings.TITLE
+ 
++    def get_template_names(self):
++        return [spectacular_settings.REDOC_TEMPLATE_NAME]
++
+     @extend_schema(exclude=True)
+     def get(self, request, *args, **kwargs):
+         return Response(
+@@ -250,7 +253,7 @@ class SpectacularRedocView(APIView):
+                 'schema_url': self._get_schema_url(request),
+                 'settings': self._dump(spectacular_settings.REDOC_UI_SETTINGS),
+             },
+-            template_name=self.template_name
++            template_name=self.get_template_names()[0]
+         )
+ 
+     def _dump(self, data):
+diff --git a/tests/test_view.py b/tests/test_view.py
+index 414e849..866b845 100644
+--- a/tests/test_view.py
++++ b/tests/test_view.py
+@@ -126,6 +126,17 @@ def test_spectacular_ui_view(no_warnings, ui):
+     assert b'"/api/v2/schema/"' in response.content
+ 
+ 
++from django.test import override_settings
++
++@override_settings(SPECTACULAR_SETTINGS={'REDOC_TEMPLATE_NAME': 'custom_redoc.html'})
++@pytest.mark.urls(__name__)
++@mock.patch('rest_framework.renderers.TemplateHTMLRenderer.render')
++def test_spectacular_redoc_custom_template(mock_render):
++    mock_render.return_value = b"<html></html>"
++    response = APIClient().get('/api/v2/schema/redoc/')
++    assert response.template_name == 'custom_redoc.html'
++
++
+ @pytest.mark.urls(__name__)
+ def test_spectacular_swagger_ui_alternate(no_warnings):
+     # first request for the html

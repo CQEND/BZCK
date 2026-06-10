@@ -1,0 +1,309 @@
+diff --git a/tests/test_plumbing.py b/tests/test_plumbing.py
+index 2516969..da889f5 100644
+--- a/tests/test_plumbing.py
++++ b/tests/test_plumbing.py
+@@ -21,10 +21,11 @@ from rest_framework import generics, serializers
+ 
+ from drf_spectacular.openapi import AutoSchema
+ from drf_spectacular.plumbing import (
+-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
+-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
+-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
++    analyze_named_regex_pattern, build_basic_type, build_choice_field, build_parameter_type,
++    detype_pattern, follow_field_source, force_instance, get_doc, get_list_serializer,
++    get_relative_url, is_field, is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+ )
++from drf_spectacular.utils import OpenApiParameter
+ from drf_spectacular.validation import validate_schema
+ from tests import generate_schema
+ 
+@@ -517,3 +518,289 @@ def test_get_doc_with_method_docstring(disable):
+             assert doc == ""
+         else:
+             assert doc == "a docstring"
++
++
++def test_build_parameter_type_basic():
++    result = build_parameter_type(
++        name='page',
++        schema={'type': 'integer'},
++        location=OpenApiParameter.QUERY,
++    )
++    assert result == {
++        'in': 'query',
++        'name': 'page',
++        'schema': {'type': 'integer'},
++    }
++
++
++def test_build_parameter_type_with_description_and_required():
++    result = build_parameter_type(
++        name='id',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        required=True,
++        description='The resource ID',
++    )
++    assert result['description'] == 'The resource ID'
++    assert result['required'] is True
++
++
++def test_build_parameter_type_path_always_required():
++    result = build_parameter_type(
++        name='pk',
++        schema={'type': 'integer'},
++        location=OpenApiParameter.PATH,
++    )
++    assert result['required'] is True
++
++
++def test_build_parameter_type_deprecated():
++    result = build_parameter_type(
++        name='old_param',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        deprecated=True,
++    )
++    assert result['deprecated'] is True
++
++
++def test_build_parameter_type_explode_true():
++    result = build_parameter_type(
++        name='tags',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location=OpenApiParameter.QUERY,
++        explode=True,
++    )
++    assert result['explode'] is True
++
++
++def test_build_parameter_type_explode_false():
++    result = build_parameter_type(
++        name='ids',
++        schema={'type': 'array', 'items': {'type': 'integer'}},
++        location=OpenApiParameter.QUERY,
++        explode=False,
++    )
++    assert result['explode'] is False
++
++
++def test_build_parameter_type_style_deep_object():
++    result = build_parameter_type(
++        name='filter',
++        schema={'type': 'object', 'properties': {'name': {'type': 'string'}}},
++        location=OpenApiParameter.QUERY,
++        style='deepObject',
++    )
++    assert result['style'] == 'deepObject'
++
++
++def test_build_parameter_type_style_form():
++    result = build_parameter_type(
++        name='items',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location=OpenApiParameter.QUERY,
++        style='form',
++    )
++    assert result['style'] == 'form'
++
++
++def test_build_parameter_type_array_with_enum():
++    result = build_parameter_type(
++        name='status',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location=OpenApiParameter.QUERY,
++        enum=['active', 'inactive', 'pending'],
++    )
++    assert result['schema']['items']['enum'] == ['active', 'inactive', 'pending']
++    assert 'enum' not in result['schema']
++
++
++def test_build_parameter_type_non_array_with_enum():
++    result = build_parameter_type(
++        name='category',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        enum=['cat1', 'cat2', 'cat3'],
++    )
++    assert result['schema']['enum'] == ['cat1', 'cat2', 'cat3']
++
++
++def test_build_parameter_type_array_with_pattern():
++    result = build_parameter_type(
++        name='tags',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location=OpenApiParameter.QUERY,
++        pattern=r'^[a-z]+$',
++    )
++    assert result['schema']['items']['pattern'] == r'^[a-z]+$'
++    assert 'pattern' not in result['schema']
++
++
++def test_build_parameter_type_non_array_with_pattern():
++    result = build_parameter_type(
++        name='username',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        pattern=r'^[a-zA-Z0-9_]+$',
++    )
++    assert result['schema']['pattern'] == r'^[a-zA-Z0-9_]+$'
++
++
++def test_build_parameter_type_default_value():
++    result = build_parameter_type(
++        name='page',
++        schema={'type': 'integer'},
++        location=OpenApiParameter.QUERY,
++        default=1,
++    )
++    assert result['schema']['default'] == 1
++
++
++def test_build_parameter_type_path_ignores_default():
++    result = build_parameter_type(
++        name='id',
++        schema={'type': 'integer'},
++        location=OpenApiParameter.PATH,
++        default=1,
++    )
++    assert 'default' not in result['schema']
++
++
++def test_build_parameter_type_path_ignores_nullable():
++    result = build_parameter_type(
++        name='id',
++        schema={'type': 'integer', 'nullable': True, 'default': None},
++        location=OpenApiParameter.PATH,
++    )
++    assert 'nullable' not in result['schema']
++    assert 'default' not in result['schema']
++
++
++def test_build_parameter_type_allow_blank_false():
++    result = build_parameter_type(
++        name='name',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        allow_blank=False,
++    )
++    assert result['schema']['minLength'] == 1
++
++
++def test_build_parameter_type_allow_blank_false_preserves_existing_min_length():
++    result = build_parameter_type(
++        name='name',
++        schema={'type': 'string', 'minLength': 5},
++        location=OpenApiParameter.QUERY,
++        allow_blank=False,
++    )
++    assert result['schema']['minLength'] == 5
++
++
++def test_build_parameter_type_allow_blank_true():
++    result = build_parameter_type(
++        name='name',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        allow_blank=True,
++    )
++    assert 'minLength' not in result['schema']
++
++
++def test_build_parameter_type_with_examples():
++    examples = [
++        {'summary': 'Example 1', 'value': 'test'},
++    ]
++    result = build_parameter_type(
++        name='filter',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        examples=examples,
++    )
++    assert result['examples'] == examples
++
++
++def test_build_parameter_type_with_extensions():
++    extensions = {'x-custom': 'value'}
++    result = build_parameter_type(
++        name='filter',
++        schema={'type': 'string'},
++        location=OpenApiParameter.QUERY,
++        extensions=extensions,
++    )
++    assert result['x-custom'] == 'value'
++
++
++def test_build_parameter_type_header_location():
++    result = build_parameter_type(
++        name='X-Custom-Header',
++        schema={'type': 'string'},
++        location=OpenApiParameter.HEADER,
++    )
++    assert result['in'] == 'header'
++    assert result['name'] == 'X-Custom-Header'
++
++
++def test_build_parameter_type_cookie_location():
++    result = build_parameter_type(
++        name='session_id',
++        schema={'type': 'string'},
++        location=OpenApiParameter.COOKIE,
++    )
++    assert result['in'] == 'cookie'
++    assert result['name'] == 'session_id'
++
++
++def test_build_parameter_type_style_and_explode_combined():
++    result = build_parameter_type(
++        name='filter',
++        schema={'type': 'object', 'properties': {'name': {'type': 'string'}}},
++        location=OpenApiParameter.QUERY,
++        style='deepObject',
++        explode=True,
++    )
++    assert result['style'] == 'deepObject'
++    assert result['explode'] is True
++
++
++def test_build_parameter_type_array_with_explode_and_style():
++    result = build_parameter_type(
++        name='ids',
++        schema={'type': 'array', 'items': {'type': 'integer'}},
++        location=OpenApiParameter.QUERY,
++        style='pipeDelimited',
++        explode=False,
++    )
++    assert result['style'] == 'pipeDelimited'
++    assert result['explode'] is False
++
++
++def test_build_parameter_type_array_with_enum_and_pattern():
++    result = build_parameter_type(
++        name='status',
++        schema={'type': 'array', 'items': {'type': 'string'}},
++        location=OpenApiParameter.QUERY,
++        enum=['active', 'inactive'],
++        pattern=r'^(active|inactive)$',
++    )
++    assert result['schema']['items']['enum'] == ['active', 'inactive']
++    assert result['schema']['items']['pattern'] == r'^(active|inactive)$'
++
++
++def test_build_parameter_type_path_removes_readonly_writeonly():
++    result = build_parameter_type(
++        name='id',
++        schema={'type': 'string', 'readOnly': True, 'writeOnly': True},
++        location=OpenApiParameter.PATH,
++    )
++    assert 'readOnly' not in result['schema']
++    assert 'writeOnly' not in result['schema']
++
++
++def test_build_parameter_type_query_keeps_readonly_writeonly():
++    result = build_parameter_type(
++        name='id',
++        schema={'type': 'string', 'readOnly': True, 'writeOnly': True},
++        location=OpenApiParameter.QUERY,
++    )
++    assert 'readOnly' not in result['schema']
++    assert 'writeOnly' not in result['schema']

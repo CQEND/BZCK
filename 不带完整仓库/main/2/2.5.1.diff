@@ -1,0 +1,120 @@
+diff --git a/drf_spectacular/contrib/django_filters.py b/drf_spectacular/contrib/django_filters.py
+index a125986..dc2b3cb 100644
+--- a/drf_spectacular/contrib/django_filters.py
++++ b/drf_spectacular/contrib/django_filters.py
+@@ -3,9 +3,9 @@ from django.db import models
+ from drf_spectacular.drainage import add_trace_message, get_override, has_override, warn
+ from drf_spectacular.extensions import OpenApiFilterExtension
+ from drf_spectacular.plumbing import (
+-    build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
+-    follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
+-    is_field,
++    build_array_type, build_basic_type, build_choice_description_list, build_choice_field,
++    build_parameter_type, follow_field_source, force_instance, get_manager, get_type_hints,
++    get_view_model, is_basic_type, is_field,
+ )
+ from drf_spectacular.settings import spectacular_settings
+ from drf_spectacular.types import OpenApiTypes
+@@ -227,6 +227,8 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+         elif callable(filter_field.extra['choices']):
+             # choices function may utilize the DB, so refrain from actually calling it.
+             return []
++        elif self._is_explicit_choice_filter(filter_field):
++            return self._get_explicit_choice_schema(filter_field).get('enum')
+         else:
+             choices = [c for c, _ in filter_field.extra['choices']]
+ 
+@@ -235,6 +237,38 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+ 
+             return choices
+ 
++    def _is_explicit_choice_filter(self, filter_field):
++        from django_filters import filters
++
++        choice_filter_classes = (
++            filters.ChoiceFilter,
++            filters.MultipleChoiceFilter,
++        )
++        skipped_filter_classes = tuple(
++            cls for cls in (
++                getattr(filters, 'ModelChoiceFilter', None),
++                getattr(filters, 'ModelMultipleChoiceFilter', None),
++                getattr(filters, 'AllValuesFilter', None),
++                getattr(filters, 'AllValuesMultipleFilter', None),
++            ) if cls is not None
++        )
++        return isinstance(filter_field, choice_filter_classes) and not isinstance(
++            filter_field, skipped_filter_classes
++        )
++
++    def _get_explicit_choice_schema(self, filter_field):
++        from rest_framework import serializers
++
++        schema = build_choice_field(serializers.ChoiceField(choices=filter_field.extra['choices']))
++
++        if (
++            getattr(filter_field.field, 'null_label', None) is not None
++            and filter_field.field.null_value not in schema['enum']
++        ):
++            schema['enum'].append(filter_field.field.null_value)
++
++        return schema
++
+     def _get_model_field(self, filter_field, model):
+         if not filter_field.field_name:
+             return None
+@@ -282,7 +316,10 @@ class DjangoFilterExtension(OpenApiFilterExtension):
+ 
+         choice_description = ''
+         if spectacular_settings.ENUM_GENERATE_CHOICE_DESCRIPTION and choices and not callable(choices):
+-            choice_description = build_choice_description_list(choices)
++            if self._is_explicit_choice_filter(filter_field):
++                choice_description = self._get_explicit_choice_schema(filter_field).get('description', '')
++            else:
++                choice_description = build_choice_description_list(choices)
+ 
+         if not choices:
+             return description
+diff --git a/tests/contrib/test_django_filters.py b/tests/contrib/test_django_filters.py
+index eee7790..a0c2632 100644
+--- a/tests/contrib/test_django_filters.py
++++ b/tests/contrib/test_django_filters.py
+@@ -437,6 +437,38 @@ def test_filterset_enum_description_duplication(no_warnings):
+     )
+ 
+ 
++@pytest.mark.contrib('django_filter')
++def test_choice_filter_grouped_choices_enum(no_warnings):
++    grouped_choices = (
++        ('Audio', (('vinyl', 'Vinyl'), ('cd', 'CD'))),
++        ('Video', (('vhs', 'VHS Tape'), ('dvd', 'DVD'))),
++    )
++
++    class GroupedChoiceFilterSet(FilterSet):
++        media = ChoiceFilter(field_name='category', choices=grouped_choices)
++        other_sub_product = ModelChoiceFilter(
++            field_name='other_sub_product', queryset=OtherSubProduct.objects.all()
++        )
++
++        class Meta:
++            model = Product
++            fields = []
++
++    class XViewSet(viewsets.ReadOnlyModelViewSet):
++        queryset = Product.objects.none()
++        serializer_class = ProductSerializer
++        filter_backends = [DjangoFilterBackend]
++        filterset_class = GroupedChoiceFilterSet
++
++    schema = generate_schema('/x', XViewSet)
++    parameters = {
++        parameter['name']: parameter for parameter in schema['paths']['/x/']['get']['parameters']
++    }
++
++    assert parameters['media']['schema']['enum'] == ['cd', 'dvd', 'vinyl', 'vhs']
++    assert parameters['other_sub_product']['schema'] == {'type': 'integer'}
++
++
+ @pytest.mark.contrib('django_filter')
+ def test_filter_on_listapiview(no_warnings):
+     class XListView(generics.ListAPIView):

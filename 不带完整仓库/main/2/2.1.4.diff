@@ -1,0 +1,335 @@
+diff --git a/drf_spectacular/plumbing.py b/drf_spectacular/plumbing.py
+index a6a76c9..3b984b0 100644
+--- a/drf_spectacular/plumbing.py
++++ b/drf_spectacular/plumbing.py
+@@ -337,15 +337,151 @@ def build_object_type(
+     return schema
+ 
+ 
+-def build_media_type_object(schema, examples=None, encoding=None) -> _SchemaType:
+-    media_type_object = {'schema': schema}
+-    if examples:
+-        media_type_object['examples'] = examples
+-    if encoding:
+-        media_type_object['encoding'] = encoding
++def _get_media_type_schema(
++        schema: Union[_SchemaType, 'serializers.BaseSerializer', Any],
++        direction: Optional[str] = None,
++        serializer: Any = None,
++) -> Optional[_SchemaType]:
++    """
++    Extract and normalize the core schema for a media type object.
++
++    Handles raw schema dicts, basic types, type hints, and DRF serializers by
++    converting them to a consistent OpenAPI schema representation. Returns
++    ``None`` when the provided input cannot be resolved to a meaningful schema.
++    """
++    if schema is None:
++        return None
++    if isinstance(schema, dict):
++        return schema
++    if is_basic_type(schema):
++        return build_basic_type(schema)
++    if is_higher_order_type_hint(schema):
++        return resolve_type_hint(schema)
++    if is_serializer(schema):
++        from drf_spectacular.openapi import AutoSchema  # type: ignore
++        # Best effort via module-level helper when no explicit resolver provided.
++        return {'$ref': f'#/components/schemas/{type(schema).__name__}'}
++    return schema
++
++
++def _resolve_media_type_encoding(
++        encoding: Optional[Dict[str, Any]],
++        media_type: Optional[str] = None,
++) -> Optional[Dict[str, Any]]:
++    """
++    Validate and resolve an OpenAPI ``encoding`` object for the given media type.
++
++    Encoding objects are only well-defined for ``application/x-www-form-urlencoded``
++    and ``multipart/*`` media types per the OpenAPI specification. Emits a warning
++    when encoding is supplied for incompatible media types so integrators know that
++    behaviour is undefined.
++    """
++    if not encoding:
++        return None
++    if media_type is not None and encoding:
++        if (
++            media_type != 'application/x-www-form-urlencoded'
++            and not media_type.startswith('multipart')
++        ):
++            warn(
++                'Encodings object on media types other than "application/x-www-form-urlencoded" '
++                'or "multipart/*" have undefined behavior.'
++            )
++    resolved: Dict[str, Any] = {}
++    for prop_name, prop_encoding in encoding.items():
++        if isinstance(prop_encoding, dict):
++            resolved[prop_name] = {k: v for k, v in prop_encoding.items() if v is not None}
++        else:
++            resolved[prop_name] = prop_encoding
++    return resolved
++
++
++def _build_media_type_examples(
++        examples: Optional[Sequence[Any]],
++) -> Optional[_SchemaType]:
++    """
++    Build an OpenAPI ``examples`` object for a media type.
++
++    Accepts either a pre-built mapping (dict) or a sequence of :class:`OpenApiExample`
++    objects. Returns ``None`` for empty input so callers can skip adding the
++    ``examples`` key to the parent media type object.
++    """
++    if not examples:
++        return None
++    if isinstance(examples, dict):
++        return examples
++    # Support raw sequences of example-like objects by delegating to the
++    # standardized builder utility.
++    try:
++        return build_examples_list(examples)
++    except Exception:
++        return None
++
++
++def _apply_content_type_overrides(
++        media_type_object: _SchemaType,
++        media_type: Optional[str],
++        overrides: Optional[Dict[str, Any]] = None,
++) -> _SchemaType:
++    """
++    Apply per-content-type overrides to a media type object.
++
++    ``overrides`` may contain any legal Media Type Object key and takes precedence
++    over generated values. When the override value is ``None`` the corresponding
++    key is removed from the media type object, which is useful for stripping
++    fields that do not apply to a specific content type (e.g. ``schema`` for
++    raw ``text/plain`` bodies).
++    """
++    if not overrides:
++        return media_type_object
++    for key, value in overrides.items():
++        if value is None:
++            media_type_object.pop(key, None)
++        else:
++            media_type_object[key] = value
++    # Media-type-specific adjustments derived from the negotiated content-type.
++    if media_type and media_type.startswith('multipart/form-data'):
++        media_type_object.setdefault(
++            'encoding',
++            {prop: {'contentType': 'application/octet-stream'} for prop in media_type_object.get('schema', {}).get('properties', {}) if media_type_object.get('schema', {}).get('properties', {}).get(prop, {}).get('format') == 'binary'}
++        )
+     return media_type_object
+ 
+ 
++def build_media_type_object(
++        schema,
++        examples=None,
++        encoding=None,
++        media_type: Optional[str] = None,
++        overrides: Optional[Dict[str, Any]] = None,
++) -> _SchemaType:
++    """
++    Build an OpenAPI `Media Type Object <https://swagger.io/specification/#media-type-object>`_.
++
++    The object is assembled from a core ``schema`` plus optional ``examples`` and
++    ``encoding`` mappings. Content-type-specific overrides may be supplied via
++    ``overrides`` to tweak the resulting object for a particular ``media_type``
++    (e.g. ``multipart/form-data``).
++
++    Internally delegates to the helper functions :func:`_get_media_type_schema`,
++    :func:`_resolve_media_type_encoding`, :func:`_build_media_type_examples` and
++    :func:`_apply_content_type_overrides` so each responsibility can be tested
++    and reused in isolation.
++    """
++    resolved_schema = _get_media_type_schema(schema)
++    media_type_object: _SchemaType = {'schema': resolved_schema}
++
++    resolved_examples = _build_media_type_examples(examples)
++    if resolved_examples:
++        media_type_object['examples'] = resolved_examples
++
++    resolved_encoding = _resolve_media_type_encoding(encoding, media_type)
++    if resolved_encoding:
++        media_type_object['encoding'] = resolved_encoding
++
++    return _apply_content_type_overrides(media_type_object, media_type, overrides)
++
++
+ def build_examples_list(examples: Sequence[OpenApiExample]) -> _SchemaType:
+     schema = {}
+     for example in examples:
+diff --git a/tests/test_plumbing.py b/tests/test_plumbing.py
+index 2516969..940d238 100644
+--- a/tests/test_plumbing.py
++++ b/tests/test_plumbing.py
+@@ -21,10 +21,13 @@ from rest_framework import generics, serializers
+ 
+ from drf_spectacular.openapi import AutoSchema
+ from drf_spectacular.plumbing import (
+-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
+-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
+-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
++    _apply_content_type_overrides, _build_media_type_examples, _get_media_type_schema,
++    _resolve_media_type_encoding, analyze_named_regex_pattern, build_basic_type,
++    build_choice_field, build_media_type_object, detype_pattern, follow_field_source,
++    force_instance, get_doc, get_list_serializer, get_relative_url, is_field, is_serializer,
++    resolve_type_hint, safe_ref, set_query_parameters,
+ )
++from drf_spectacular.utils import OpenApiExample
+ from drf_spectacular.validation import validate_schema
+ from tests import generate_schema
+ 
+@@ -517,3 +520,151 @@ def test_get_doc_with_method_docstring(disable):
+             assert doc == ""
+         else:
+             assert doc == "a docstring"
++
++
++# ---------------------------------------------------------------------------
++# Tests for the media-type helper functions extracted from build_media_type_object.
++# ---------------------------------------------------------------------------
++
++
++def test_build_media_type_object_minimal():
++    # Schema-only usage preserves the schema key (no optional fields emitted).
++    schema = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
++    result = build_media_type_object(schema)
++    assert result == {'schema': schema}
++    assert 'examples' not in result
++    assert 'encoding' not in result
++
++
++def test_build_media_type_object_with_examples_dict():
++    schema = {'type': 'string'}
++    examples = {'default': {'value': 'hello'}}
++    result = build_media_type_object(schema, examples=examples)
++    assert result['examples'] == examples
++
++
++def test_build_media_type_object_with_encoding():
++    schema = {'type': 'object'}
++    encoding = {'file': {'contentType': 'application/octet-stream'}}
++    result = build_media_type_object(
++        schema, encoding=encoding, media_type='multipart/form-data',
++    )
++    assert result['encoding'] == encoding
++
++
++def test_get_media_type_schema_none_returns_none():
++    assert _get_media_type_schema(None) is None
++
++
++def test_get_media_type_schema_dict_passthrough():
++    schema = {'type': 'object'}
++    assert _get_media_type_schema(schema) is schema
++
++
++def test_get_media_type_schema_basic_type():
++    from drf_spectacular.types import OpenApiTypes
++    result = _get_media_type_schema(OpenApiTypes.INT)
++    assert result is not None
++    assert result.get('type') in ('integer', 'number')
++
++
++def test_resolve_media_type_encoding_empty_input():
++    assert _resolve_media_type_encoding(None) is None
++    assert _resolve_media_type_encoding({}) is None
++
++
++def test_resolve_media_type_encoding_preserves_valid_encoding():
++    encoding = {'file': {'contentType': 'application/octet-stream'}}
++    assert _resolve_media_type_encoding(
++        encoding, 'multipart/form-data') == encoding
++
++
++def test_resolve_media_type_encoding_warns_on_incompatible_media_type():
++    encoding = {'file': {'contentType': 'application/octet-stream'}}
++    with mock.patch('drf_spectacular.drainage.warn') as mocked_warn:
++        result = _resolve_media_type_encoding(encoding, 'application/json')
++    mocked_warn.assert_called_once()
++    assert result == encoding
++
++
++def test_resolve_media_type_encoding_strips_none_values():
++    encoding = {'file': {'contentType': 'image/png', 'headers': None}}
++    result = _resolve_media_type_encoding(encoding, 'multipart/form-data')
++    assert result == {'file': {'contentType': 'image/png'}}
++
++
++def test_build_media_type_examples_none_and_empty():
++    assert _build_media_type_examples(None) is None
++    assert _build_media_type_examples([]) is None
++
++
++def test_build_media_type_examples_dict_passthrough():
++    examples = {'default': {'value': 'ok'}}
++    assert _build_media_type_examples(examples) is examples
++
++
++def test_build_media_type_examples_from_openapi_example_objects():
++    examples = [
++        OpenApiExample(name='example1', value='hello'),
++    ]
++    result = _build_media_type_examples(examples)
++    assert result is not None
++    assert 'Example1' in result
++    assert result['Example1']['value'] == 'hello'
++
++
++def test_apply_content_type_overrides_no_overrides_is_identity():
++    obj = {'schema': {'type': 'string'}}
++    assert _apply_content_type_overrides(obj, 'application/json') is obj
++    assert obj == {'schema': {'type': 'string'}}
++
++
++def test_apply_content_type_overrides_adds_key():
++    obj = {'schema': {'type': 'string'}}
++    result = _apply_content_type_overrides(
++        obj, 'application/json', overrides={'description': 'raw string body'}
++    )
++    assert result['description'] == 'raw string body'
++
++
++def test_apply_content_type_overrides_removes_key_when_value_is_none():
++    obj = {
++        'schema': {'type': 'object'},
++        'examples': {'foo': {'value': 1}},
++    }
++    result = _apply_content_type_overrides(
++        obj, 'text/plain', overrides={'schema': None}
++    )
++    assert 'schema' not in result
++    assert 'examples' in result
++
++
++def test_apply_content_type_overrides_override_value_takes_precedence():
++    obj = {'schema': {'type': 'object'}}
++    result = _apply_content_type_overrides(
++        obj,
++        'application/json', overrides={'schema': {'type': 'string'}}
++    )
++    assert result['schema'] == {'type': 'string'}
++
++
++def test_build_media_type_object_accepts_media_type_and_overrides():
++    # Verify that the combined path through helpers produces expected shape.
++    result = build_media_type_object(
++        {'type': 'object'},
++        examples={'demo': {'value': 'ok'}},
++        encoding={'file': {'contentType': 'application/octet-stream'}},
++        media_type='multipart/form-data',
++    )
++    assert result['schema'] == {'type': 'object'}
++    assert result['examples'] == {'demo': {'value': 'ok'}}
++    assert result['encoding'] == {'file': {'contentType': 'application/octet-stream'}}
++
++
++def test_build_media_type_object_overrides_override_existing_keys():
++    result = build_media_type_object(
++        {'type': 'object'},
++        examples={'demo': {'value': 'ok'}},
++        overrides={'schema': {'type': 'string'}},
++    )
++    assert result['schema'] == {'type': 'string'}

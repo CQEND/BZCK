@@ -1,0 +1,308 @@
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java
+new file mode 100644
+index 000000000..30e697fbd
+--- /dev/null
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateRequest.java
+@@ -0,0 +1,29 @@
++package org.apache.fineract.portfolio.loanaccount.data;
++
++import jakarta.validation.constraints.NotEmpty;
++import jakarta.validation.constraints.NotNull;
++import java.io.Serial;
++import java.io.Serializable;
++import java.time.LocalDate;
++import java.util.List;
++import lombok.AllArgsConstructor;
++import lombok.Data;
++import lombok.NoArgsConstructor;
++
++@Data
++@NoArgsConstructor
++@AllArgsConstructor
++public class BatchUpdateRepaymentDateRequest implements Serializable {
++
++    @Serial
++    private static final long serialVersionUID = 1L;
++
++    @NotEmpty
++    private List<Long> loanIds;
++
++    @NotNull
++    private LocalDate newRepaymentDate;
++
++    @NotNull
++    private Long loanProductId;
++}
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java
+new file mode 100644
+index 000000000..413459fbe
+--- /dev/null
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/data/BatchUpdateRepaymentDateResponse.java
+@@ -0,0 +1,20 @@
++package org.apache.fineract.portfolio.loanaccount.data;
++
++import java.io.Serial;
++import java.io.Serializable;
++import java.util.List;
++import lombok.AllArgsConstructor;
++import lombok.Data;
++import lombok.NoArgsConstructor;
++
++@Data
++@NoArgsConstructor
++@AllArgsConstructor
++public class BatchUpdateRepaymentDateResponse implements Serializable {
++
++    @Serial
++    private static final long serialVersionUID = 1L;
++
++    private Integer totalUpdated;
++    private List<Long> updatedLoanIds;
++}
+diff --git a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
+index 59cf3054d..c803c8300 100644
+--- a/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
++++ b/fineract-loan/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformService.java
+@@ -20,6 +20,7 @@ package org.apache.fineract.portfolio.loanaccount.service;
+ 
+ import java.time.LocalDate;
+ import java.util.Collection;
++import java.util.List;
+ import java.util.Map;
+ import org.apache.fineract.infrastructure.core.api.JsonCommand;
+ import org.apache.fineract.infrastructure.core.data.CommandProcessingResult;
+@@ -127,4 +128,6 @@ public interface LoanWritePlatformService {
+     CommandProcessingResult makeRefund(Long loanId, LoanTransactionType loanTransactionType, JsonCommand command);
+ 
+     CommandProcessingResult makeManualInterestRefund(Long loanId, Long transactionId, JsonCommand command);
++
++    void batchUpdateFirstRepaymentDate(List<Long> loanIds, LocalDate newRepaymentDate, Long loanProductId);
+ }
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
+index 86fc0cdbc..21780e6f0 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/api/LoansApiResource.java
+@@ -33,6 +33,7 @@ import io.swagger.v3.oas.annotations.parameters.RequestBody;
+ import io.swagger.v3.oas.annotations.responses.ApiResponse;
+ import io.swagger.v3.oas.annotations.responses.ApiResponses;
+ import io.swagger.v3.oas.annotations.tags.Tag;
++import jakarta.validation.Valid;
+ import jakarta.ws.rs.Consumes;
+ import jakarta.ws.rs.DELETE;
+ import jakarta.ws.rs.DefaultValue;
+@@ -124,6 +125,8 @@ import org.apache.fineract.portfolio.fund.data.FundData;
+ import org.apache.fineract.portfolio.fund.service.FundReadPlatformService;
+ import org.apache.fineract.portfolio.group.data.GroupGeneralData;
+ import org.apache.fineract.portfolio.group.service.GroupReadPlatformService;
++import org.apache.fineract.portfolio.loanaccount.data.BatchUpdateRepaymentDateRequest;
++import org.apache.fineract.portfolio.loanaccount.data.BatchUpdateRepaymentDateResponse;
+ import org.apache.fineract.portfolio.loanaccount.data.CollectionData;
+ import org.apache.fineract.portfolio.loanaccount.data.DisbursementData;
+ import org.apache.fineract.portfolio.loanaccount.data.GlimRepaymentTemplate;
+@@ -166,6 +169,7 @@ import org.apache.fineract.portfolio.loanaccount.service.LoanChargeReadPlatformS
+ import org.apache.fineract.portfolio.loanaccount.service.LoanReadPlatformService;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanSummaryDataProvider;
+ import org.apache.fineract.portfolio.loanaccount.service.LoanSummaryProviderDelegate;
++import org.apache.fineract.portfolio.loanaccount.service.LoanWritePlatformService;
+ import org.apache.fineract.portfolio.loanorigination.data.LoanOriginatorData;
+ import org.apache.fineract.portfolio.loanorigination.service.LoanOriginatorReadPlatformService;
+ import org.apache.fineract.portfolio.loanproduct.LoanProductConstants;
+@@ -274,6 +278,7 @@ public class LoansApiResource {
+ 
+     private final PlatformSecurityContext context;
+     private final LoanReadPlatformService loanReadPlatformService;
++    private final LoanWritePlatformService loanWritePlatformService;
+     private final LoanProductReadPlatformService loanProductReadPlatformService;
+     private final LoanDropdownReadPlatformService dropdownReadPlatformService;
+     private final FundReadPlatformService fundReadPlatformService;
+@@ -581,6 +586,20 @@ public class LoansApiResource {
+         return this.toApiJsonSerializer.serialize(result);
+     }
+ 
++    @POST
++    @Path("first-repayment-date")
++    @Consumes({ MediaType.APPLICATION_JSON })
++    @Produces({ MediaType.APPLICATION_JSON })
++    @Operation(summary = "Batch update first repayment date for approved undisbursed loans", description = "Updates the first repayment date for multiple loans that belong to the same loan product, are approved but not yet disbursed, and do not yet have a generated repayment schedule.")
++    @ApiResponses({ @ApiResponse(responseCode = "200", description = "OK", content = @Content(schema = @Schema(implementation = BatchUpdateRepaymentDateResponse.class))) })
++    public BatchUpdateRepaymentDateResponse batchUpdateFirstRepaymentDate(
++            @RequestBody(required = true, content = @Content(schema = @Schema(implementation = BatchUpdateRepaymentDateRequest.class))) @Valid final BatchUpdateRepaymentDateRequest request) {
++        this.context.authenticatedUser().validateHasPermissionTo("UPDATE_" + RESOURCE_NAME_FOR_PERMISSIONS);
++        this.loanWritePlatformService.batchUpdateFirstRepaymentDate(request.getLoanIds(), request.getNewRepaymentDate(),
++                request.getLoanProductId());
++        return new BatchUpdateRepaymentDateResponse(request.getLoanIds().size(), request.getLoanIds());
++    }
++
+     @PUT
+     @Path("{loanId}")
+     @Consumes({ MediaType.APPLICATION_JSON })
+diff --git a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+index 50dc5a4c0..7f0373588 100644
+--- a/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
++++ b/fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/service/LoanWritePlatformServiceJpaRepositoryImpl.java
+@@ -40,6 +40,7 @@ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.Comparator;
+ import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Locale;
+@@ -115,6 +116,7 @@ import org.apache.fineract.organisation.staff.domain.Staff;
+ import org.apache.fineract.organisation.teller.data.CashierTransactionDataValidator;
+ import org.apache.fineract.organisation.workingdays.domain.WorkingDays;
+ import org.apache.fineract.organisation.workingdays.domain.WorkingDaysRepositoryWrapper;
++import org.apache.fineract.organisation.workingdays.service.WorkingDaysUtil;
+ import org.apache.fineract.portfolio.account.PortfolioAccountType;
+ import org.apache.fineract.portfolio.account.data.AccountTransferDTO;
+ import org.apache.fineract.portfolio.account.data.PortfolioAccountData;
+@@ -3678,4 +3680,149 @@ public class LoanWritePlatformServiceJpaRepositoryImpl implements LoanWritePlatf
+             loan.setExpectedMaturityDate(latestRepaymentDate);
+         }
+     }
++
++    @Transactional
++    @Override
++    public void batchUpdateFirstRepaymentDate(final List<Long> loanIds, final LocalDate newRepaymentDate, final Long loanProductId) {
++        validateBatchUpdateFirstRepaymentDateRequest(loanIds, newRepaymentDate, loanProductId);
++
++        final List<Loan> loans = this.loanRepository.findAllById(loanIds);
++        final Map<Long, Loan> loansById = new HashMap<>();
++        for (Loan loan : loans) {
++            loansById.put(loan.getId(), loan);
++        }
++
++        for (Long loanId : loanIds) {
++            if (!loansById.containsKey(loanId)) {
++                throw batchUpdateFirstRepaymentDateException(
++                        "error.msg.loan.batch.update.first.repayment.date.loan.not.found",
++                        "Loan " + loanId + " was not found.", "loanIds", loanId, loanId);
++            }
++        }
++
++        final List<Loan> loansToUpdate = new ArrayList<>();
++        for (Long loanId : loanIds) {
++            final Loan loan = loansById.get(loanId);
++            validateLoanForBatchUpdateFirstRepaymentDate(loan, newRepaymentDate, loanProductId);
++            loan.setExpectedFirstRepaymentOnDate(newRepaymentDate);
++            loansToUpdate.add(loan);
++        }
++
++        this.loanRepository.saveAll(loansToUpdate);
++    }
++
++    private void validateBatchUpdateFirstRepaymentDateRequest(final List<Long> loanIds, final LocalDate newRepaymentDate,
++            final Long loanProductId) {
++        final List<ApiParameterError> dataValidationErrors = new ArrayList<>();
++
++        if (loanIds == null || loanIds.isEmpty()) {
++            dataValidationErrors.add(ApiParameterError.parameterError(
++                    "error.msg.loan.batch.update.first.repayment.date.loan.ids.required", "At least one loanId must be provided.",
++                    "loanIds", loanIds));
++        } else {
++            final Set<Long> uniqueLoanIds = new HashSet<>();
++            for (Long loanId : loanIds) {
++                if (loanId == null) {
++                    dataValidationErrors.add(ApiParameterError.parameterError(
++                            "error.msg.loan.batch.update.first.repayment.date.loan.id.required",
++                            "Loan ids must not contain null values.", "loanIds", loanIds));
++                    break;
++                }
++                if (!uniqueLoanIds.add(loanId)) {
++                    dataValidationErrors.add(ApiParameterError.parameterError(
++                            "error.msg.loan.batch.update.first.repayment.date.loan.ids.duplicate",
++                            "Loan ids must be unique. Duplicate loanId found: " + loanId + ".", "loanIds", loanIds, loanId));
++                    break;
++                }
++            }
++        }
++
++        if (newRepaymentDate == null) {
++            dataValidationErrors.add(ApiParameterError.parameterError(
++                    "error.msg.loan.batch.update.first.repayment.date.date.required", "A new repayment date must be provided.",
++                    "newRepaymentDate", null));
++        }
++        if (loanProductId == null) {
++            dataValidationErrors.add(ApiParameterError.parameterError(
++                    "error.msg.loan.batch.update.first.repayment.date.loan.product.id.required",
++                    "A loan product id must be provided.", "loanProductId", null));
++        }
++
++        if (!dataValidationErrors.isEmpty()) {
++            throw new PlatformApiDataValidationException("validation.msg.validation.errors.exist", "Validation errors exist.",
++                    dataValidationErrors);
++        }
++    }
++
++    private void validateLoanForBatchUpdateFirstRepaymentDate(final Loan loan, final LocalDate newRepaymentDate,
++            final Long loanProductId) {
++        final Long loanId = loan.getId();
++        if (!Objects.equals(loan.loanProduct().getId(), loanProductId)) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.loan.product.mismatch",
++                    "Loan " + loanId + " does not belong to loan product " + loanProductId + ".", "loanProductId",
++                    loanProductId, loanId, loanProductId, loan.loanProduct().getId());
++        }
++        if (!loan.isApproved() || loan.isDisbursed()) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.loan.status.invalid",
++                    "Loan " + loanId + " status does not allow first repayment date update. Only approved undisbursed loans are allowed.",
++                    "loanIds", loanId, loanId, loan.getStatus().getValue());
++        }
++        if (loan.getLoanRepaymentScheduleInstallmentsSize() > 0) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.repayment.schedule.exists",
++                    "Loan " + loanId + " already has a repayment schedule and cannot be updated.", "loanIds", loanId, loanId);
++        }
++
++        final LocalDate expectedDisbursementDate = loan.getExpectedDisbursementDate();
++        if (expectedDisbursementDate == null) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.disbursement.date.missing",
++                    "Loan " + loanId + " does not have an expected disbursement date.", "loanIds", loanId, loanId);
++        }
++        if (DateUtils.isBefore(newRepaymentDate, expectedDisbursementDate)) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.before.disbursement.date",
++                    "Loan " + loanId + " has an invalid repayment date. The new first repayment date cannot be before the expected disbursement date.",
++                    "newRepaymentDate", newRepaymentDate, loanId, expectedDisbursementDate);
++        }
++
++        final LocalDate minimumFirstRepaymentDate = expectedDisbursementDate
++                .plusDays(loan.loanProduct().getMinimumDaysBetweenDisbursalAndFirstRepayment());
++        if (DateUtils.isBefore(newRepaymentDate, minimumFirstRepaymentDate)) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.minimum.days.violation",
++                    "Loan " + loanId + " has an invalid repayment date. The new first repayment date violates the minimum days between disbursal and first repayment.",
++                    "newRepaymentDate", newRepaymentDate, loanId, minimumFirstRepaymentDate,
++                    loan.loanProduct().getMinimumDaysBetweenDisbursalAndFirstRepayment());
++        }
++        if (loan.getSubmittedOnDate() != null && DateUtils.isAfter(loan.getSubmittedOnDate(), newRepaymentDate)) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.before.submitted.on.date",
++                    "Loan " + loanId + " has an invalid repayment date. The new first repayment date cannot be before the submitted on date.",
++                    "newRepaymentDate", newRepaymentDate, loanId, loan.getSubmittedOnDate());
++        }
++
++        final HolidayDetailDTO holidayDetailDTO = this.loanUtilService.constructHolidayDTO(loan.getOfficeId(), expectedDisbursementDate);
++        if (!holidayDetailDTO.isAllowTransactionsOnHoliday() && HolidayUtil.isHoliday(newRepaymentDate, holidayDetailDTO.getHolidays())) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.on.holiday",
++                    "Loan " + loanId + " has an invalid repayment date. The new first repayment date cannot be on a holiday.",
++                    "newRepaymentDate", newRepaymentDate, loanId);
++        }
++        if (!holidayDetailDTO.isAllowTransactionsOnNonWorkingDay()
++                && !WorkingDaysUtil.isWorkingDay(holidayDetailDTO.getWorkingDays(), newRepaymentDate)) {
++            throw batchUpdateFirstRepaymentDateException(
++                    "error.msg.loan.batch.update.first.repayment.date.on.non.working.day",
++                    "Loan " + loanId + " has an invalid repayment date. The new first repayment date cannot be on a non working day.",
++                    "newRepaymentDate", newRepaymentDate, loanId);
++        }
++    }
++
++    private PlatformApiDataValidationException batchUpdateFirstRepaymentDateException(final String messageCode,
++            final String defaultUserMessage, final String parameterName, final Object value, final Object... userMessageArgs) {
++        return new PlatformApiDataValidationException("validation.msg.validation.errors.exist", "Validation errors exist.",
++                List.of(ApiParameterError.parameterError(messageCode, defaultUserMessage, parameterName, value, userMessageArgs)));
++    }
+ }
