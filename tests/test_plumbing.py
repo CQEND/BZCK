@@ -21,10 +21,12 @@ from rest_framework import generics, serializers
 
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
+    analyze_named_regex_pattern, build_basic_type, build_choice_field, build_parameter_type,
+    detype_pattern, follow_field_source, force_instance, get_doc, get_list_serializer,
+    get_relative_url, is_field, is_serializer, resolve_type_hint, safe_ref,
+    set_query_parameters,
 )
+from drf_spectacular.utils import OpenApiParameter
 from drf_spectacular.validation import validate_schema
 from tests import generate_schema
 
@@ -432,6 +434,141 @@ def test_choicefield_empty_choices():
     schema = build_choice_field(serializers.ChoiceField(choices=[], allow_blank=True, allow_null=True))
     assert schema['enum'] == ['', None]
     assert schema['type'] == 'string'
+
+
+def test_build_parameter_type_deep_object_style_with_explode_true():
+    parameter = build_parameter_type(
+        name='filters',
+        schema={'type': 'object', 'properties': {'enabled': {'type': 'boolean'}}},
+        location=OpenApiParameter.QUERY,
+        style='deepObject',
+        explode=True,
+        description='nested filters',
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'filters',
+        'schema': {'type': 'object', 'properties': {'enabled': {'type': 'boolean'}}},
+        'description': 'nested filters',
+        'explode': True,
+        'style': 'deepObject',
+    }
+
+
+def test_build_parameter_type_form_style_with_explode_false_for_array():
+    parameter = build_parameter_type(
+        name='tags',
+        schema={'type': 'array', 'items': {'type': 'string'}},
+        location=OpenApiParameter.QUERY,
+        style='form',
+        explode=False,
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'tags',
+        'schema': {'type': 'array', 'items': {'type': 'string'}},
+        'explode': False,
+        'style': 'form',
+    }
+
+
+def test_build_parameter_type_array_enum_and_pattern_are_applied_to_items():
+    parameter = build_parameter_type(
+        name='status',
+        schema={'type': 'array', 'items': {'type': 'string'}},
+        location=OpenApiParameter.QUERY,
+        enum=['active', 'draft'],
+        pattern='^[a-z]+$',
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'status',
+        'schema': {
+            'type': 'array',
+            'items': {
+                'type': 'string',
+                'enum': ['active', 'draft'],
+                'pattern': '^[a-z]+$',
+            },
+        },
+    }
+
+
+def test_build_parameter_type_scalar_enum_and_pattern_are_applied_to_schema():
+    parameter = build_parameter_type(
+        name='state',
+        schema={'type': 'string'},
+        location=OpenApiParameter.QUERY,
+        enum=['draft', 'active'],
+        pattern='^[a-z]+$',
+        deprecated=True,
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'state',
+        'deprecated': True,
+        'schema': {
+            'type': 'string',
+            'enum': ['active', 'draft'],
+            'pattern': '^[a-z]+$',
+        },
+    }
+
+
+def test_build_parameter_type_path_strips_nullable_and_default_and_forces_required():
+    parameter = build_parameter_type(
+        name='pk',
+        schema={'type': 'string', 'nullable': True, 'default': 'ignored', 'readOnly': True},
+        location=OpenApiParameter.PATH,
+        default='kept-outside-schema',
+    )
+
+    assert parameter == {
+        'in': 'path',
+        'name': 'pk',
+        'required': True,
+        'schema': {'type': 'string'},
+    }
+
+
+def test_build_parameter_type_not_allow_blank_respects_existing_min_length_and_default():
+    parameter = build_parameter_type(
+        name='slug',
+        schema={'type': 'string', 'minLength': 5},
+        location=OpenApiParameter.QUERY,
+        allow_blank=False,
+        default='hello',
+        required=True,
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'slug',
+        'required': True,
+        'schema': {'type': 'string', 'minLength': 5, 'default': 'hello'},
+    }
+
+
+def test_build_parameter_type_includes_examples_and_extensions():
+    parameter = build_parameter_type(
+        name='search',
+        schema={'type': 'string'},
+        location=OpenApiParameter.QUERY,
+        examples={'basic': {'value': 'test'}},
+        extensions={'x-trace-id': 'abc123'},
+    )
+
+    assert parameter == {
+        'in': 'query',
+        'name': 'search',
+        'schema': {'type': 'string'},
+        'examples': {'basic': {'value': 'test'}},
+        'x-trace-id': 'abc123',
+    }
 
 
 def test_safe_ref():
