@@ -3,9 +3,9 @@ from django.db import models
 from drf_spectacular.drainage import add_trace_message, get_override, has_override, warn
 from drf_spectacular.extensions import OpenApiFilterExtension
 from drf_spectacular.plumbing import (
-    build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
-    follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
-    is_field,
+    build_array_type, build_basic_type, build_choice_description_list, build_choice_field,
+    build_parameter_type, follow_field_source, force_instance, get_manager, get_type_hints,
+    get_view_model, is_basic_type, is_field,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -227,6 +227,8 @@ class DjangoFilterExtension(OpenApiFilterExtension):
         elif callable(filter_field.extra['choices']):
             # choices function may utilize the DB, so refrain from actually calling it.
             return []
+        elif self._is_explicit_choice_filter(filter_field):
+            return self._get_explicit_choice_schema(filter_field).get('enum')
         else:
             choices = [c for c, _ in filter_field.extra['choices']]
 
@@ -234,6 +236,38 @@ class DjangoFilterExtension(OpenApiFilterExtension):
                 choices.append(filter_field.field.null_value)
 
             return choices
+
+    def _is_explicit_choice_filter(self, filter_field):
+        from django_filters import filters
+
+        choice_filter_classes = (
+            filters.ChoiceFilter,
+            filters.MultipleChoiceFilter,
+        )
+        skipped_filter_classes = tuple(
+            cls for cls in (
+                getattr(filters, 'ModelChoiceFilter', None),
+                getattr(filters, 'ModelMultipleChoiceFilter', None),
+                getattr(filters, 'AllValuesFilter', None),
+                getattr(filters, 'AllValuesMultipleFilter', None),
+            ) if cls is not None
+        )
+        return isinstance(filter_field, choice_filter_classes) and not isinstance(
+            filter_field, skipped_filter_classes
+        )
+
+    def _get_explicit_choice_schema(self, filter_field):
+        from rest_framework import serializers
+
+        schema = build_choice_field(serializers.ChoiceField(choices=filter_field.extra['choices']))
+
+        if (
+            getattr(filter_field.field, 'null_label', None) is not None
+            and filter_field.field.null_value not in schema['enum']
+        ):
+            schema['enum'].append(filter_field.field.null_value)
+
+        return schema
 
     def _get_model_field(self, filter_field, model):
         if not filter_field.field_name:
@@ -282,7 +316,10 @@ class DjangoFilterExtension(OpenApiFilterExtension):
 
         choice_description = ''
         if spectacular_settings.ENUM_GENERATE_CHOICE_DESCRIPTION and choices and not callable(choices):
-            choice_description = build_choice_description_list(choices)
+            if self._is_explicit_choice_filter(filter_field):
+                choice_description = self._get_explicit_choice_schema(filter_field).get('description', '')
+            else:
+                choice_description = build_choice_description_list(choices)
 
         if not choices:
             return description

@@ -438,6 +438,38 @@ def test_filterset_enum_description_duplication(no_warnings):
 
 
 @pytest.mark.contrib('django_filter')
+def test_choice_filter_grouped_choices_enum(no_warnings):
+    grouped_choices = (
+        ('Audio', (('vinyl', 'Vinyl'), ('cd', 'CD'))),
+        ('Video', (('vhs', 'VHS Tape'), ('dvd', 'DVD'))),
+    )
+
+    class GroupedChoiceFilterSet(FilterSet):
+        media = ChoiceFilter(field_name='category', choices=grouped_choices)
+        other_sub_product = ModelChoiceFilter(
+            field_name='other_sub_product', queryset=OtherSubProduct.objects.all()
+        )
+
+        class Meta:
+            model = Product
+            fields = []
+
+    class XViewSet(viewsets.ReadOnlyModelViewSet):
+        queryset = Product.objects.none()
+        serializer_class = ProductSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = GroupedChoiceFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    parameters = {
+        parameter['name']: parameter for parameter in schema['paths']['/x/']['get']['parameters']
+    }
+
+    assert parameters['media']['schema']['enum'] == ['cd', 'dvd', 'vinyl', 'vhs']
+    assert parameters['other_sub_product']['schema'] == {'type': 'integer'}
+
+
+@pytest.mark.contrib('django_filter')
 def test_filter_on_listapiview(no_warnings):
     class XListView(generics.ListAPIView):
         queryset = Product.objects.all()
