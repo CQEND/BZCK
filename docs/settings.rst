@@ -60,3 +60,22 @@ in your project files.
         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
         ...
     }
+
+Example: Redoc template
+-----------------------
+
+You can override the default Redoc HTML template by providing your own template path.
+This is useful for adding a company logo, customizing the title, inserting additional
+JavaScript, or modifying the HTML structure.
+
+.. code:: python
+
+    SPECTACULAR_SETTINGS = {
+        ...
+        # Override the default Redoc template with your own
+        "REDOC_TEMPLATE_NAME": "myapp/custom_redoc.html",
+        ...
+    }
+
+The default template can be found at ``drf_spectacular/templates/drf_spectacular/redoc.html``.
+Copy it to your project's templates directory and modify it as needed.

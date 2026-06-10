@@ -76,6 +76,9 @@ SPECTACULAR_DEFAULTS: Dict[str, Any] = {
     # The settings are serialized with json.dumps(). If you need customized JS, use a
     # string instead. The string must then contain valid JS and is passed unchanged.
     'REDOC_UI_SETTINGS': {},
+    # Redoc template name. Override this to use a custom Redoc HTML template
+    # (e.g. to add a company logo, custom title, or extra JS).
+    'REDOC_TEMPLATE_NAME': 'drf_spectacular/redoc.html',
 
     # CDNs for swagger and redoc. You can change the version or even host your
     # own depending on your requirements. For self-hosting, have a look at

@@ -194,3 +194,11 @@ def test_swagger_oauth_redirect_view(get_params):
     else:
         assert response.headers['Location'] ==\
                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
+
+
+@mock.patch(
+    'drf_spectacular.settings.spectacular_settings.REDOC_TEMPLATE_NAME',
+    'custom_redoc.html'
+)
+def test_redoc_custom_template_name():
+    assert SpectacularRedocView().get_template_names() == 'custom_redoc.html'
