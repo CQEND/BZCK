@@ -480,3 +480,27 @@ To work around this, use ``lazy_serializer`` to lazily load the ``Serializer``.
         def get_nested_boxes(self, instance: Box):
             nested_boxes = instance.nested_boxes.all()
             return BoxSerializer(nested_boxes, many=True).data
+
+How to use asynchronous views (``async def``)
+---------------------------------------------
+
+Django 3.1+ and DRF 3.12+ (or via third-party extensions like ``adrf``) support asynchronous views and the ``AsyncAPIView`` class. *drf-spectacular* provides out-of-the-box support for correctly introspecting these asynchronous views. 
+
+When generating the schema, *drf-spectacular* will safely evaluate any asynchronous implementations of ``get_serializer``, ``get_serializer_class``, or ``get_queryset`` methods using ``asgiref.sync.async_to_sync`` to prevent ``SynchronousOnlyOperation`` errors. Method signatures, type hints, and docstrings of ``async def`` view methods are parsed just like their synchronous counterparts.
+
+.. code-block:: python
+
+    from rest_framework.views import APIView # or adrf.views.APIView
+    from rest_framework.response import Response
+    from drf_spectacular.utils import extend_schema
+
+    class MyAsyncView(APIView):
+        @extend_schema(responses=MySerializer)
+        async def get(self, request):
+            data = await get_some_data()
+            return Response(data)
+
+**Limitations:**
+
+- The schema generation process itself remains synchronous. Asynchronous methods are wrapped and executed synchronously during schema generation.
+- Make sure to use ``@extend_schema`` as usual; it correctly processes the wrapped ``async def`` methods.

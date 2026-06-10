@@ -219,7 +219,7 @@ def get_view_model(view, emit_warnings=True):
         return model
 
     try:
-        return view.get_queryset().model
+        return force_evaluate_async_result(view.get_queryset()).model
     except Exception as exc:
         if emit_warnings:
             warn(
@@ -264,6 +264,15 @@ def get_type_hints(obj) -> Dict[str, Any]:
     if isinstance(obj, functools.partial):
         obj = obj.func
     return typing.get_type_hints(obj)
+
+
+def force_evaluate_async_result(result):
+    if inspect.isawaitable(result):
+        from asgiref.sync import async_to_sync
+        async def evaluate():
+            return await result
+        return async_to_sync(evaluate)()
+    return result
 
 
 @cache

@@ -40,7 +40,7 @@ from drf_spectacular.plumbing import (
     is_list_serializer_customized, is_patched_serializer, is_serializer,
     is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
     resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
-    whitelisted,
+    whitelisted, force_evaluate_async_result,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -1212,15 +1212,15 @@ class AutoSchema(ViewInspector):
                 # try to circumvent queryset issues with calling get_serializer. if view has NOT
                 # overridden get_serializer, its safe to use get_serializer_class.
                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
-                    return view.get_serializer_class()(context=context)
-                return view.get_serializer(context=context)
+                    return force_evaluate_async_result(view.get_serializer_class())(context=context)
+                return force_evaluate_async_result(view.get_serializer(context=context))
             elif isinstance(view, APIView):
                 # APIView does not implement the required interface, but be lenient and make
                 # good guesses before giving up and emitting a warning.
                 if callable(getattr(view, 'get_serializer', None)):
-                    return view.get_serializer(context=context)
+                    return force_evaluate_async_result(view.get_serializer(context=context))
                 elif callable(getattr(view, 'get_serializer_class', None)):
-                    return view.get_serializer_class()(context=context)
+                    return force_evaluate_async_result(view.get_serializer_class())(context=context)
                 elif hasattr(view, 'serializer_class'):
                     return view.serializer_class
                 else:
