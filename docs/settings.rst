@@ -60,3 +60,23 @@ in your project files.
         "SWAGGER_UI_FAVICON_HREF": settings.STATIC_URL + "your_company_favicon.png", # default is swagger favicon
         ...
     }
+
+ReDoc Template Customization
+-----------------------------
+
+By default, ``SpectacularRedocView`` uses the built-in template ``drf_spectacular/redoc.html``.
+You can override this by setting ``REDOC_TEMPLATE_NAME`` to use a custom template in your project.
+
+This is useful for adding company branding, custom titles, or inserting additional JavaScript.
+
+.. code:: python
+
+    SPECTACULAR_SETTINGS = {
+        ...
+        # Path to your custom Redoc template (relative to template directories)
+        "REDOC_TEMPLATE_NAME": "myapp/custom_redoc.html",
+        ...
+    }
+
+Your custom template should include the necessary context variables:
+``{{ redoc_standalone }}``, ``{{ schema_url }}``, ``{{ title }}``, and ``{{ settings }}``.

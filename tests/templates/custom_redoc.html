@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Redoc Template</title>
+</head>
+<body>
+    <div id="redoc-container"></div>
+    <script src="{{ redoc_standalone }}"></script>
+    <script>
+        Redoc.init("{{ schema_url }}", {}, document.getElementById("redoc-container"));
+    </script>
+</body>
+</html>

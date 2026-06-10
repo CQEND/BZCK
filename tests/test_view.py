@@ -4,6 +4,7 @@ import pytest
 import yaml
 from django import __version__ as DJANGO_VERSION
 from django.http import HttpResponseRedirect
+from django.test import override_settings
 from django.urls import path
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -194,3 +195,12 @@ def test_swagger_oauth_redirect_view(get_params):
     else:
         assert response.headers['Location'] ==\
                '/static/drf_spectacular_sidecar/swagger-ui-dist/oauth2-redirect.html?' + get_params
+
+
+@pytest.mark.urls(__name__)
+@override_settings(SPECTACULAR_SETTINGS={'REDOC_TEMPLATE_NAME': 'custom_redoc.html'})
+def test_spectacular_redoc_custom_template(no_warnings):
+    response = APIClient().get('/api/v2/schema/redoc/')
+    assert response.status_code == 200
+    assert response.content.startswith(b'<!DOCTYPE html>')
+    assert b'<title>Custom Redoc Template</title>' in response.content
