@@ -378,6 +378,23 @@ and break down each case separately.
     def view_func(request, format=None):
         return ...
 
+What async view support is available
+------------------------------------
+
+Schema generation supports async function-based views decorated with ``@api_view``,
+``async def`` entrypoint methods on ``APIView`` and ``GenericAPIView`` descendants,
+and DRF's ``AsyncAPIView`` when that class is available.
+
+The schema generator itself still runs synchronously. Coroutine-based
+``get_serializer()``, ``get_serializer_class()``, ``get_queryset()`` and
+``get_serializer_context()`` hooks are bridged automatically so that request and
+response schemas can be discovered without executing the endpoint itself.
+
+This support is intentionally limited to introspection hooks. If those methods depend on
+runtime-only state, perform expensive I/O, or rely on custom extension code that calls async
+methods directly, you should still provide fallbacks via ``swagger_fake_view`` or explicit
+``@extend_schema`` annotations.
+
 My ``get_queryset()`` depends on some attributes not available at schema generation time
 ----------------------------------------------------------------------------------------
 

@@ -19,6 +19,12 @@ and ``get_serializer()`` are also used if available. You can also set those
 on ``APIView``. Even though this is not supported by DRF, *drf-spectacular* will pick
 them up and use them.
 
+Async ``@api_view`` handlers, ``async def`` methods on ``APIView``/``GenericAPIView``
+derivatives, and DRF's ``AsyncAPIView`` are supported during schema generation.
+Coroutine-based ``get_serializer()``, ``get_serializer_class()``, ``get_queryset()``
+and ``get_serializer_context()`` hooks are resolved automatically, but they should still
+avoid depending on runtime-only state or performing heavy side effects.
+
 
 Step 2: :py:class:`@extend_schema <drf_spectacular.utils.extend_schema>`
 ------------------------------------------------------------------------

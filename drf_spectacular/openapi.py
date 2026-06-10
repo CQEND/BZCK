@@ -34,11 +34,12 @@ from drf_spectacular.plumbing import (
     assert_basic_serializer, build_array_type, build_basic_type, build_choice_field,
     build_examples_list, build_generic_type, build_listed_example_value, build_media_type_object,
     build_mocked_view, build_object_type, build_parameter_type, build_serializer_context,
-    filter_supported_arguments, follow_field_source, follow_model_field_lookup, force_instance,
-    get_doc, get_list_serializer, get_manager, get_type_hints, get_view_model, is_basic_serializer,
-    is_basic_type, is_field, is_higher_order_type_hint, is_list_serializer,
-    is_list_serializer_customized, is_patched_serializer, is_serializer,
-    is_trivial_string_variation, modify_media_types_for_versioning, resolve_django_path_parameter,
+    call_view_method, filter_supported_arguments, follow_field_source, follow_model_field_lookup,
+    force_instance, get_doc, get_list_serializer, get_manager, get_type_hints,
+    get_view_model, is_basic_serializer, is_basic_type, is_coroutine_callable, is_field,
+    is_higher_order_type_hint, is_list_serializer, is_list_serializer_customized,
+    is_patched_serializer, is_serializer, is_trivial_string_variation,
+    modify_media_types_for_versioning, resolve_django_path_parameter,
     resolve_regex_path_parameter, resolve_type_hint, safe_ref, sanitize_specification_extensions,
     whitelisted,
 )
@@ -72,6 +73,7 @@ class AutoSchema(ViewInspector):
         self.path_regex = path_regex
         self.path_prefix = path_prefix
         self.method = method.upper()
+        self.view_is_async = self._is_async_view()
 
         if self.is_excluded():
             return None
@@ -125,6 +127,10 @@ class AutoSchema(ViewInspector):
     def is_excluded(self) -> bool:
         """ override this for custom behaviour """
         return False
+
+    def _is_async_view(self) -> bool:
+        action_or_method = getattr(self.view, getattr(self.view, 'action', self.method.lower()), None)
+        return callable(action_or_method) and is_coroutine_callable(action_or_method)
 
     def _is_list_view(self, serializer: Optional[_SerializerType] = None) -> bool:
         """
@@ -1212,15 +1218,15 @@ class AutoSchema(ViewInspector):
                 # try to circumvent queryset issues with calling get_serializer. if view has NOT
                 # overridden get_serializer, its safe to use get_serializer_class.
                 if view.__class__.get_serializer == GenericAPIView.get_serializer:
-                    return view.get_serializer_class()(context=context)
-                return view.get_serializer(context=context)
+                    return call_view_method(view, 'get_serializer_class')(context=context)
+                return call_view_method(view, 'get_serializer', context=context)
             elif isinstance(view, APIView):
                 # APIView does not implement the required interface, but be lenient and make
                 # good guesses before giving up and emitting a warning.
                 if callable(getattr(view, 'get_serializer', None)):
-                    return view.get_serializer(context=context)
+                    return call_view_method(view, 'get_serializer', context=context)
                 elif callable(getattr(view, 'get_serializer_class', None)):
-                    return view.get_serializer_class()(context=context)
+                    return call_view_method(view, 'get_serializer_class')(context=context)
                 elif hasattr(view, 'serializer_class'):
                     return view.serializer_class
                 else:

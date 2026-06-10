@@ -399,6 +399,76 @@ def test_serializer_class_on_apiview(no_warnings):
     assert schema['paths']['/x']['post']['requestBody']['content']['application/json']['schema']['$ref'] == comp
 
 
+def test_async_apiview_serializer_introspection_matches_sync(no_warnings):
+    class XSerializer(serializers.Serializer):
+        field = serializers.UUIDField()
+
+    class SyncView(APIView):
+        authentication_classes = []
+        serializer_class = XSerializer
+
+        def get_serializer(self, *args, **kwargs):
+            return self.serializer_class(*args, **kwargs)
+
+        @extend_schema(summary='sync and async should match')
+        def post(self, request):
+            pass  # pragma: no cover
+
+    AsyncAPIView = getattr(views, 'AsyncAPIView', APIView)
+
+    class AsyncView(AsyncAPIView):
+        authentication_classes = []
+        serializer_class = XSerializer
+
+        async def get_serializer(self, *args, **kwargs):
+            return self.serializer_class(*args, **kwargs)
+
+        @extend_schema(summary='sync and async should match')
+        async def post(self, request):
+            pass  # pragma: no cover
+
+    assert generate_schema('x', view=AsyncView) == generate_schema('x', view=SyncView)
+
+
+def test_async_get_queryset_introspection_matches_sync(no_warnings):
+    class SyncViewset(viewsets.ReadOnlyModelViewSet):
+        serializer_class = SimpleSerializer
+        queryset = SimpleModel.objects.all()
+
+        @extend_schema(summary='sync and async should match')
+        def retrieve(self, request, *args, **kwargs):
+            pass  # pragma: no cover
+
+    class AsyncViewset(viewsets.ReadOnlyModelViewSet):
+        serializer_class = SimpleSerializer
+
+        async def get_queryset(self):
+            return SimpleModel.objects.all()
+
+        @extend_schema(summary='sync and async should match')
+        async def retrieve(self, request, *args, **kwargs):
+            pass  # pragma: no cover
+
+    assert generate_schema('x', viewset=AsyncViewset) == generate_schema('x', viewset=SyncViewset)
+
+
+def test_async_api_view_matches_sync(no_warnings):
+    class XSerializer(serializers.Serializer):
+        field = serializers.UUIDField()
+
+    @extend_schema(request=XSerializer, responses=XSerializer)
+    @api_view(['POST'])
+    def sync_view(request, format=None):
+        pass  # pragma: no cover
+
+    @extend_schema(request=XSerializer, responses=XSerializer)
+    @api_view(['POST'])
+    async def async_view(request, format=None):
+        pass  # pragma: no cover
+
+    assert generate_schema('/x/', view_function=async_view) == generate_schema('/x/', view_function=sync_view)
+
+
 def test_customized_list_serializer():
     class X(models.Model):
         position = models.IntegerField()

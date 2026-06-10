@@ -24,6 +24,7 @@ else:
 
 import inflection
 import uritemplate
+from asgiref.sync import async_to_sync
 from django.apps import apps
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.fields.related_descriptors import (
@@ -208,6 +209,31 @@ def get_lib_doc_excludes():
     ]
 
 
+def is_coroutine_callable(obj) -> bool:
+    while isinstance(obj, functools.partial):
+        obj = obj.func
+    try:
+        obj = inspect.unwrap(obj)
+    except ValueError:
+        pass
+    return inspect.iscoroutinefunction(obj)
+
+
+def call_view_method(view, method_name: str, *args, **kwargs):
+    method = getattr(view, method_name)
+
+    if is_coroutine_callable(method):
+        return async_to_sync(method)(*args, **kwargs)
+
+    result = method(*args, **kwargs)
+    if inspect.isawaitable(result):
+        async def consume():
+            return await result
+
+        return async_to_sync(consume)()
+    return result
+
+
 def get_view_model(view, emit_warnings=True):
     """
     obtain model from view via view's queryset. try safer view attribute first
@@ -219,7 +245,7 @@ def get_view_model(view, emit_warnings=True):
         return model
 
     try:
-        return view.get_queryset().model
+        return call_view_method(view, 'get_queryset').model
     except Exception as exc:
         if emit_warnings:
             warn(
@@ -1493,7 +1519,7 @@ def filter_supported_arguments(func, **kwargs):
 
 def build_serializer_context(view) -> typing.Dict[str, Any]:
     try:
-        return view.get_serializer_context()
+        return call_view_method(view, 'get_serializer_context')
     except:  # noqa
         return {'request': view.request}
 

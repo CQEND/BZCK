@@ -4,8 +4,8 @@ from drf_spectacular.drainage import add_trace_message, get_override, has_overri
 from drf_spectacular.extensions import OpenApiFilterExtension
 from drf_spectacular.plumbing import (
     build_array_type, build_basic_type, build_choice_description_list, build_parameter_type,
-    follow_field_source, force_instance, get_manager, get_type_hints, get_view_model, is_basic_type,
-    is_field,
+    call_view_method, follow_field_source, force_instance, get_manager, get_type_hints,
+    get_view_model, is_basic_type, is_field,
 )
 from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.types import OpenApiTypes
@@ -260,7 +260,7 @@ class DjangoFilterExtension(OpenApiFilterExtension):
             return build_basic_type(OpenApiTypes.STR)
 
         if not isinstance(model_field, models.Field):
-            qs = auto_schema.view.get_queryset()
+            qs = call_view_method(auto_schema.view, 'get_queryset')
             model_field = qs.query.annotations[filter_field.field_name].field
         return auto_schema._map_model_field(model_field, direction=None)
 
