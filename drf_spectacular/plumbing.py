@@ -384,42 +384,68 @@ def build_parameter_type(
     irrelevant_field_meta = ['readOnly', 'writeOnly']
     if location == OpenApiParameter.PATH:
         irrelevant_field_meta += ['nullable', 'default']
-    schema = {
+    parameter = {
         'in': location,
         'name': name,
         'schema': {k: v for k, v in schema.items() if k not in irrelevant_field_meta},
     }
     if description:
-        schema['description'] = description
+        parameter['description'] = description
     if required or location == 'path':
-        schema['required'] = True
+        parameter['required'] = True
     if deprecated:
-        schema['deprecated'] = True
-    if explode is not None:
-        schema['explode'] = explode
-    if style is not None:
-        schema['style'] = style
+        parameter['deprecated'] = True
+
+    # OpenAPI style handling: `deepObject` style is only valid for query parameters
+    # with object schemas and implies explode=True.
+    if style == 'deepObject':
+        if location == OpenApiParameter.QUERY:
+            parameter['style'] = 'deepObject'
+            parameter['explode'] = True
+        # For non-query locations, deepObject is not valid; fall back to defaults.
+    elif style is not None:
+        parameter['style'] = style
+        if explode is not None:
+            parameter['explode'] = explode
+    else:
+        # OpenAPI defaults: form style defaults to explode=True, others default to False.
+        if explode is not None:
+            parameter['explode'] = explode
+
+    # Special handling for array schemas: when explode=True, the items should be
+    # specified as repeated parameters (style=form, explode=true). When
+    # explode=False, comma-separated values (style=form, explode=false) are used.
+    if parameter['schema'].get('type') == 'array' and 'style' not in parameter:
+        parameter['style'] = 'form'
+        if explode is not None:
+            parameter['explode'] = explode
+        elif 'explode' not in parameter:
+            parameter['explode'] = True
+
     if enum:
         # in case of array schema, enum makes little sense on the array itself
-        if schema['schema'].get('type') == 'array':
-            schema['schema']['items']['enum'] = sorted(enum, key=str)
+        if parameter['schema'].get('type') == 'array':
+            parameter['schema']['items']['enum'] = sorted(enum, key=str)
         else:
-            schema['schema']['enum'] = sorted(enum, key=str)
+            parameter['schema']['enum'] = sorted(enum, key=str)
     if pattern is not None:
         # in case of array schema, pattern only makes sense on the items
-        if schema['schema'].get('type') == 'array':
-            schema['schema']['items']['pattern'] = pattern
+        if parameter['schema'].get('type') == 'array':
+            parameter['schema']['items']['pattern'] = pattern
         else:
-            schema['schema']['pattern'] = pattern
+            parameter['schema']['pattern'] = pattern
     if default is not None and 'default' not in irrelevant_field_meta:
-        schema['schema']['default'] = default
-    if not allow_blank and schema['schema'].get('type') == 'string':
-        schema['schema']['minLength'] = schema['schema'].get('minLength', 1)
+        parameter['schema']['default'] = default
+    if not allow_blank and parameter['schema'].get('type') == 'string':
+        parameter['schema']['minLength'] = parameter['schema'].get('minLength', 1)
+        # An empty string is not a valid value; expose allowEmptyValue=False for query params.
+        if location == OpenApiParameter.QUERY:
+            parameter['allowEmptyValue'] = False
     if examples:
-        schema['examples'] = examples
+        parameter['examples'] = examples
     if extensions:
-        schema.update(sanitize_specification_extensions(extensions))
-    return schema
+        parameter.update(sanitize_specification_extensions(extensions))
+    return parameter
 
 
 def build_choice_field(field) -> _SchemaType:

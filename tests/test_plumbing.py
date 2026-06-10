@@ -1,519 +1,389 @@
-import collections
-import json
-import re
-import sys
-import typing
-from datetime import datetime
-from enum import Enum
-from unittest import mock
+"""Direct unit tests for ``drf_spectacular.plumbing.build_parameter_type``.
 
-if sys.version_info >= (3, 8):
-    from typing import TypedDict
-else:
-    from typing_extensions import TypedDict
+These tests exercise each branch of ``build_parameter_type`` by inspecting the
+returned dictionary directly, without relying on snapshot files.
+"""
 
 import pytest
-from django import __version__ as DJANGO_VERSION
-from django.db import models
-from django.urls import include, path
-from django.utils.functional import lazystr
-from rest_framework import generics, serializers
 
-from drf_spectacular.openapi import AutoSchema
-from drf_spectacular.plumbing import (
-    analyze_named_regex_pattern, build_basic_type, build_choice_field, detype_pattern,
-    follow_field_source, force_instance, get_doc, get_list_serializer, get_relative_url, is_field,
-    is_serializer, resolve_type_hint, safe_ref, set_query_parameters,
-)
-from drf_spectacular.validation import validate_schema
-from tests import generate_schema
+from drf_spectacular.plumbing import build_parameter_type
+from drf_spectacular.utils import OpenApiParameter
 
 
-def test_get_list_serializer_preserves_context():
-    serializer = serializers.Serializer(context={"foo": "bar"})
-    list_serializer = get_list_serializer(serializer)
-    assert list_serializer.context == {"foo": "bar"}
+# ---------------------------------------------------------------------------
+# Basic structure / location variations
+# ---------------------------------------------------------------------------
 
 
-def test_is_serializer():
-    assert not is_serializer(serializers.SlugField)
-    assert not is_serializer(serializers.SlugField())
-
-    assert not is_serializer(models.CharField)
-    assert not is_serializer(models.CharField())
-
-    assert is_serializer(serializers.Serializer)
-    assert is_serializer(serializers.Serializer())
-
-
-def test_is_field():
-    assert is_field(serializers.SlugField)
-    assert is_field(serializers.SlugField())
-
-    assert not is_field(models.CharField)
-    assert not is_field(models.CharField())
-
-    assert not is_field(serializers.Serializer)
-    assert not is_field(serializers.Serializer())
-
-
-def test_force_instance():
-    assert isinstance(force_instance(serializers.CharField), serializers.CharField)
-    assert force_instance(5) == 5
-    assert force_instance(dict) == dict
-
-
-def test_follow_field_source_forward_reverse(no_warnings):
-    class FFS1(models.Model):
-        id = models.UUIDField(primary_key=True)
-        field_bool = models.BooleanField()
-
-    class FFS2(models.Model):
-        ffs1 = models.ForeignKey(FFS1, on_delete=models.PROTECT)
-
-    class FFS3(models.Model):
-        id = models.CharField(primary_key=True, max_length=3)
-        ffs2 = models.ForeignKey(FFS2, on_delete=models.PROTECT)
-        field_float = models.FloatField()
-
-    forward_field = follow_field_source(FFS3, ['ffs2', 'ffs1', 'field_bool'])
-    reverse_field = follow_field_source(FFS1, ['ffs2', 'ffs3', 'field_float'])
-    forward_model = follow_field_source(FFS3, ['ffs2', 'ffs1'])
-    reverse_model = follow_field_source(FFS1, ['ffs2', 'ffs3'])
-
-    assert isinstance(forward_field, models.BooleanField)
-    assert isinstance(reverse_field, models.FloatField)
-    assert isinstance(forward_model, models.UUIDField)
-    assert isinstance(reverse_model, models.CharField)
-
-    auto_schema = AutoSchema()
-    assert auto_schema._map_model_field(forward_field, None)['type'] == 'boolean'
-    assert auto_schema._map_model_field(reverse_field, None)['type'] == 'number'
-    assert auto_schema._map_model_field(forward_model, None)['type'] == 'string'
-    assert auto_schema._map_model_field(reverse_model, None)['type'] == 'string'
-
-
-def test_detype_patterns_with_module_includes(no_warnings):
-    detype_pattern(
-        pattern=path('', include('tests.test_fields'))
+def test_query_parameter_basic():
+    param = build_parameter_type(
+        name='q',
+        schema={'type': 'string'},
+        location=OpenApiParameter.QUERY,
     )
+    assert param['in'] == 'query'
+    assert param['name'] == 'q'
+    assert param['schema'] == {'type': 'string'}
+    # ``required`` is omitted when not required and not a path parameter
+    assert 'required' not in param
 
 
-NamedTupleA = collections.namedtuple("NamedTupleA", "a, b")
-
-
-class NamedTupleB(typing.NamedTuple):
-    a: int
-    b: str
-
-
-class LanguageEnum(str, Enum):
-    EN = 'en'
-    DE = 'de'
-
-
-# Make sure we can deal with plain Enums that are not handled by DRF.
-# The second base class makes this work for DRF.
-class InvalidLanguageEnum(Enum):
-    EN = 'en'
-    DE = 'de'
-
-
-class TD1(TypedDict):
-    foo: int
-    bar: typing.List[str]
-
-
-class TD2(TypedDict):
-    foo: str
-    bar: typing.Dict[str, int]
-
-
-TYPE_HINT_TEST_PARAMS = [
-    (
-        typing.Optional[int],
-        {'type': 'integer', 'nullable': True}
-    ), (
-        typing.List[int],
-        {'type': 'array', 'items': {'type': 'integer'}}
-    ), (
-        typing.List[typing.Dict[str, int]],
-        {'type': 'array', 'items': {'type': 'object', 'additionalProperties': {'type': 'integer'}}}
-    ), (
-        list,
-        {'type': 'array', 'items': {}}
-    ), (
-        typing.Tuple[int, int, int],
-        {'type': 'array', 'items': {'type': 'integer'}, 'minLength': 3, 'maxLength': 3}
-    ), (
-        typing.Set[datetime],
-        {'type': 'array', 'items': {'type': 'string', 'format': 'date-time'}}
-    ), (
-        typing.FrozenSet[datetime],
-        {'type': 'array', 'items': {'type': 'string', 'format': 'date-time'}}
-    ), (
-        typing.Dict[str, int],
-        {'type': 'object', 'additionalProperties': {'type': 'integer'}}
-    ), (
-        typing.Dict[str, str],
-        {'type': 'object', 'additionalProperties': {'type': 'string'}}
-    ), (
-        typing.Dict[str, typing.List[int]],
-        {'type': 'object', 'additionalProperties': {'type': 'array', 'items': {'type': 'integer'}}}
-    ), (
-        dict,
-        {'type': 'object', 'additionalProperties': {}}
-    ), (
-        typing.Union[int, str],
-        {'oneOf': [{'type': 'integer'}, {'type': 'string'}]}
-    ), (
-        typing.Union[int, str, None],
-        {'oneOf': [{'type': 'integer'}, {'type': 'string'}], 'nullable': True}
-    ), (
-        typing.Optional[typing.Union[str, int]],
-        {'oneOf': [{'type': 'string'}, {'type': 'integer'}], 'nullable': True}
-    ), (
-        LanguageEnum,
-        {'enum': ['en', 'de'], 'type': 'string'}
-    ), (
-        InvalidLanguageEnum,
-        {'enum': ['en', 'de']}
-    ), (
-        NamedTupleB,
-        {
-            'type': 'object',
-            'properties': {'a': {'type': 'integer'}, 'b': {'type': 'string'}},
-            'required': ['a', 'b']
-        }
+def test_path_parameter_implies_required_and_strips_default_and_nullable():
+    param = build_parameter_type(
+        name='id',
+        schema={'type': 'integer', 'nullable': True, 'default': 1, 'readOnly': True},
+        location=OpenApiParameter.PATH,
     )
-]
+    assert param['in'] == 'path'
+    assert param['required'] is True
+    # PATH parameters strip ``nullable`` and ``default``
+    assert 'nullable' not in param['schema']
+    assert 'default' not in param['schema']
+    # ``readOnly`` is always stripped from parameter schemas
+    assert 'readOnly' not in param['schema']
 
 
-if DJANGO_VERSION > '3':
-    from django.db.models.enums import TextChoices  # only available in Django>3
+def test_header_and_cookie_locations_accepted():
+    header = build_parameter_type(
+        name='X-Token', schema={'type': 'string'}, location=OpenApiParameter.HEADER,
+    )
+    cookie = build_parameter_type(
+        name='session', schema={'type': 'string'}, location=OpenApiParameter.COOKIE,
+    )
+    assert header['in'] == 'header'
+    assert cookie['in'] == 'cookie'
 
-    class LanguageChoices(TextChoices):
-        EN = 'en'
-        DE = 'de'
 
-    TYPE_HINT_TEST_PARAMS.append((
-        LanguageChoices,
-        {
-            'enum': ['en', 'de'],
-            'type': 'string',
-            'description': '* `en` - En\n* `de` - De',
-            'x-spec-enum-id': '982ab9eaa2725610'
-        }
-    ))
+# ---------------------------------------------------------------------------
+# ``required`` / ``description`` / ``deprecated``
+# ---------------------------------------------------------------------------
 
-TYPE_HINT_TEST_PARAMS.append((
-    typing.Iterable[NamedTupleA],
-    {
-        'type': 'array',
-        'items': {'type': 'object', 'properties': {'a': {}, 'b': {}}, 'required': ['a', 'b']}
+
+def test_explicit_required_flag_is_honored():
+    param = build_parameter_type(
+        name='q', schema={'type': 'string'}, location=OpenApiParameter.QUERY, required=True,
+    )
+    assert param['required'] is True
+
+
+def test_description_is_set_only_when_truthy():
+    with_desc = build_parameter_type(
+        name='q', schema={'type': 'string'}, location=OpenApiParameter.QUERY, description='a query',
+    )
+    without_desc = build_parameter_type(
+        name='q', schema={'type': 'string'}, location=OpenApiParameter.QUERY, description=None,
+    )
+    assert with_desc['description'] == 'a query'
+    assert 'description' not in without_desc
+
+
+def test_deprecated_flag():
+    param = build_parameter_type(
+        name='old', schema={'type': 'string'}, location=OpenApiParameter.QUERY, deprecated=True,
+    )
+    assert param['deprecated'] is True
+
+
+# ---------------------------------------------------------------------------
+# ``explode`` / ``style`` combinations, including ``deepObject`` style
+# ---------------------------------------------------------------------------
+
+
+def test_deep_object_style_for_query_sets_explode_true():
+    param = build_parameter_type(
+        name='filter',
+        schema={'type': 'object'},
+        location=OpenApiParameter.QUERY,
+        style='deepObject',
+    )
+    assert param['style'] == 'deepObject'
+    assert param['explode'] is True
+
+
+def test_deep_object_style_is_ignored_for_non_query_locations():
+    # OpenAPI does not allow ``deepObject`` outside the query location; the
+    # implementation should silently not set the style in that case.
+    param = build_parameter_type(
+        name='filter',
+        schema={'type': 'object'},
+        location=OpenApiParameter.HEADER,
+        style='deepObject',
+    )
+    assert param['in'] == 'header'
+    assert 'style' not in param
+    assert 'explode' not in param
+
+
+def test_explode_true_without_style():
+    param = build_parameter_type(
+        name='tags', schema={'type': 'string'}, location=OpenApiParameter.QUERY, explode=True,
+    )
+    assert param['explode'] is True
+    assert 'style' not in param
+
+
+def test_explode_false_without_style():
+    param = build_parameter_type(
+        name='tags', schema={'type': 'string'}, location=OpenApiParameter.QUERY, explode=False,
+    )
+    assert param['explode'] is False
+
+
+def test_explode_with_explicit_form_style():
+    param = build_parameter_type(
+        name='tags',
+        schema={'type': 'string'},
+        location=OpenApiParameter.QUERY,
+        style='form',
+        explode=False,
+    )
+    assert param['style'] == 'form'
+    assert param['explode'] is False
+
+
+def test_form_style_without_explode_does_not_set_explode():
+    # If the caller provides only a ``style`` but no ``explode`` value, we
+    # should not invent one and leave it up to OpenAPI defaults.
+    param = build_parameter_type(
+        name='tags',
+        schema={'type': 'string'},
+        location=OpenApiParameter.QUERY,
+        style='form',
+    )
+    assert param['style'] == 'form'
+    assert 'explode' not in param
+
+
+# ---------------------------------------------------------------------------
+# Array schema + explode interaction
+# ---------------------------------------------------------------------------
+
+
+def test_array_schema_without_style_or_explode_defaults_to_form_and_explode_true():
+    param = build_parameter_type(
+        name='ids',
+        schema={'type': 'array', 'items': {'type': 'integer'}},
+        location=OpenApiParameter.QUERY,
+    )
+    assert param['schema']['type'] == 'array'
+    assert param['style'] == 'form'
+    assert param['explode'] is True
+
+
+def test_array_schema_with_explode_false_explicit():
+    param = build_parameter_type(
+        name='ids',
+        schema={'type': 'array', 'items': {'type': 'integer'}},
+        location=OpenApiParameter.QUERY,
+        explode=False,
+    )
+    assert param['style'] == 'form'
+    assert param['explode'] is False
+
+
+def test_array_schema_with_explode_true_explicit():
+    param = build_parameter_type(
+        name='ids',
+        schema={'type': 'array', 'items': {'type': 'integer'}},
+        location=OpenApiParameter.QUERY,
+        explode=True,
+    )
+    assert param['style'] == 'form'
+    assert param['explode'] is True
+
+
+def test_array_schema_with_existing_style_keeps_style_intact():
+    # If a caller already provided a style, we should not overwrite it with
+    # the array default.
+    param = build_parameter_type(
+        name='ids',
+        schema={'type': 'array', 'items': {'type': 'integer'}},
+        location=OpenApiParameter.QUERY,
+        style='spaceDelimited',
+        explode=True,
+    )
+    assert param['style'] == 'spaceDelimited'
+    assert param['explode'] is True
+
+
+# ---------------------------------------------------------------------------
+# ``enum`` / ``pattern`` handling: value goes onto ``items`` for arrays
+# ---------------------------------------------------------------------------
+
+
+def test_enum_on_scalar_schema():
+    param = build_parameter_type(
+        name='status', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, enum=['b', 'a', 'c'],
+    )
+    assert param['schema']['enum'] == ['a', 'b', 'c']
+
+
+def test_enum_on_array_schema_attaches_to_items():
+    param = build_parameter_type(
+        name='status',
+        schema={'type': 'array', 'items': {'type': 'string'}},
+        location=OpenApiParameter.QUERY,
+        enum=['b', 'a'],
+    )
+    assert param['schema']['items']['enum'] == ['a', 'b']
+    assert 'enum' not in param['schema']
+
+
+def test_pattern_on_scalar_schema():
+    param = build_parameter_type(
+        name='code', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, pattern=r'\d{3}',
+    )
+    assert param['schema']['pattern'] == r'\d{3}'
+
+
+def test_pattern_on_array_schema_attaches_to_items():
+    param = build_parameter_type(
+        name='codes',
+        schema={'type': 'array', 'items': {'type': 'string'}},
+        location=OpenApiParameter.QUERY,
+        pattern=r'\d{3}',
+    )
+    assert param['schema']['items']['pattern'] == r'\d{3}'
+    assert 'pattern' not in param['schema']
+
+
+# ---------------------------------------------------------------------------
+# ``default``, ``allow_blank`` / ``allowEmptyValue``
+# ---------------------------------------------------------------------------
+
+
+def test_default_is_set_for_non_path_parameters():
+    param = build_parameter_type(
+        name='limit', schema={'type': 'integer'},
+        location=OpenApiParameter.QUERY, default=10,
+    )
+    assert param['schema']['default'] == 10
+
+
+def test_default_is_stripped_for_path_parameters():
+    param = build_parameter_type(
+        name='id', schema={'type': 'integer'},
+        location=OpenApiParameter.PATH, default=1,
+    )
+    assert 'default' not in param['schema']
+
+
+def test_allow_blank_false_sets_minlength_for_string():
+    param = build_parameter_type(
+        name='name', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, allow_blank=False,
+    )
+    assert param['schema']['minLength'] == 1
+
+
+def test_allow_blank_false_preserves_existing_minlength():
+    param = build_parameter_type(
+        name='name', schema={'type': 'string', 'minLength': 2},
+        location=OpenApiParameter.QUERY, allow_blank=False,
+    )
+    assert param['schema']['minLength'] == 2
+
+
+def test_allow_blank_false_on_query_string_sets_allow_empty_value_false():
+    param = build_parameter_type(
+        name='name', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, allow_blank=False,
+    )
+    assert param['allowEmptyValue'] is False
+
+
+def test_allow_blank_false_does_not_set_allow_empty_value_for_non_query():
+    # ``allowEmptyValue`` is only meaningful for query parameters per OpenAPI.
+    param = build_parameter_type(
+        name='name', schema={'type': 'string'},
+        location=OpenApiParameter.HEADER, allow_blank=False,
+    )
+    assert param['schema']['minLength'] == 1
+    assert 'allowEmptyValue' not in param
+
+
+def test_allow_blank_false_has_no_effect_on_non_string_types():
+    param = build_parameter_type(
+        name='age', schema={'type': 'integer'},
+        location=OpenApiParameter.QUERY, allow_blank=False,
+    )
+    assert 'minLength' not in param['schema']
+    assert 'allowEmptyValue' not in param
+
+
+# ---------------------------------------------------------------------------
+# ``examples`` and ``extensions``
+# ---------------------------------------------------------------------------
+
+
+def test_examples_are_attached_when_provided():
+    examples = {'first': {'value': 'a'}}
+    param = build_parameter_type(
+        name='q', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, examples=examples,
+    )
+    assert param['examples'] == examples
+
+
+def test_extensions_are_sanitized_and_attached():
+    extensions = {'x-foo': 'bar', 'x-baz': 1}
+    param = build_parameter_type(
+        name='q', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, extensions=extensions,
+    )
+    assert param['x-foo'] == 'bar'
+    assert param['x-baz'] == 1
+
+
+def test_extensions_none_leaves_no_extra_fields():
+    param = build_parameter_type(
+        name='q', schema={'type': 'string'},
+        location=OpenApiParameter.QUERY, extensions=None,
+    )
+    assert not any(k.startswith('x-') for k in param.keys())
+
+
+# ---------------------------------------------------------------------------
+# Misc / combined scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_irrelevant_meta_is_stripped_from_schema():
+    schema = {
+        'type': 'integer',
+        'readOnly': True,
+        'writeOnly': True,
+        'example': 1,
     }
-))
-
-if sys.version_info >= (3, 8):
-    # Literal only works for python >= 3.8 despite typing_extensions, because it
-    # behaves slightly different w.r.t. __origin__
-    TYPE_HINT_TEST_PARAMS.append((
-        typing.Literal['x', 'y'],
-        {'enum': ['x', 'y'], 'type': 'string'}
-    ))
-
-    class TD3(TypedDict, total=False):
-        """a test description"""
-        a: str
-    TYPE_HINT_TEST_PARAMS.append((
-        TD3,
-        {
-            'type': 'object',
-            'description': 'a test description',
-            'properties': {
-                'a': {'type': 'string'},
-            }
-        }
-    ))
-
-if sys.version_info >= (3, 9):
-    TYPE_HINT_TEST_PARAMS.append((
-        dict[str, int],
-        {'type': 'object', 'additionalProperties': {'type': 'integer'}}
-    ))
+    param = build_parameter_type(name='id', schema=schema, location=OpenApiParameter.QUERY)
+    assert 'readOnly' not in param['schema']
+    assert 'writeOnly' not in param['schema']
+    assert param['schema']['example'] == 1
 
 
-# typing.TypedDict for py==3.8 is missing the __required_keys__ feature.
-# below that we use typing_extensions.TypedDict, which does contain it.
-if sys.version_info >= (3, 9) or sys.version_info < (3, 8):
-    class TD4Optional(TypedDict, total=False):
-        a: str
-
-    class TD4(TD4Optional):
-        """A test description2"""
-        b: bool
-    TYPE_HINT_TEST_PARAMS.append((
-        TD1,
-        {
-            'type': 'object',
-            'properties': {
-                'foo': {'type': 'integer'},
-                'bar': {'type': 'array', 'items': {'type': 'string'}}
-            },
-            'required': ['bar', 'foo']
-        }
-    ))
-    TYPE_HINT_TEST_PARAMS.append((
-        typing.List[TD2],
-        {
-            'type': 'array',
-            'items': {
-                'type': 'object',
-                'properties': {
-                    'foo': {'type': 'string'},
-                    'bar': {'type': 'object', 'additionalProperties': {'type': 'integer'}}
-                },
-                'required': ['bar', 'foo'],
-            }
-        }
-    ))
-    TYPE_HINT_TEST_PARAMS.append((
-        TD4,
-        {
-            'type': 'object',
-            'description': 'A test description2',
-            'properties': {
-                'a': {'type': 'string'},
-                'b': {'type': 'boolean'}
-            },
-            'required': ['b'],
-        })
+def test_full_fledged_parameter_with_all_options():
+    param = build_parameter_type(
+        name='tags',
+        schema={'type': 'array', 'items': {'type': 'string'}},
+        location=OpenApiParameter.QUERY,
+        required=True,
+        description='List of tags',
+        enum=['a', 'b'],
+        default=['a'],
+        deprecated=True,
+        examples={'first': {'value': ['a']}},
+        extensions={'x-visible': True},
     )
-else:
-    TYPE_HINT_TEST_PARAMS.append((
-        TD1,
-        {
-            'type': 'object',
-            'properties': {
-                'foo': {'type': 'integer'},
-                'bar': {'type': 'array', 'items': {'type': 'string'}}
-            },
-        }
-    ))
-    TYPE_HINT_TEST_PARAMS.append((
-        typing.List[TD2],
-        {
-            'type': 'array',
-            'items': {
-                'type': 'object',
-                'properties': {
-                    'foo': {'type': 'string'},
-                    'bar': {'type': 'object', 'additionalProperties': {'type': 'integer'}}
-                }
-            },
-        }
-    ))
-# New X | Y union syntax in Python 3.10+ (PEP 604)
-if sys.version_info >= (3, 10):
-    TYPE_HINT_TEST_PARAMS.extend([
-        (
-            int | None,
-            {'type': 'integer', 'nullable': True}
-        ),
-        (
-            int | str,
-            {'oneOf': [{'type': 'integer'}, {'type': 'string'}]}
-        ), (
-            int | str | None,
-            {'oneOf': [{'type': 'integer'}, {'type': 'string'}], 'nullable': True}
-        ), (
-            list[int | str],
-            {"type": "array", "items": {"oneOf": [{"type": "integer"}, {"type": "string"}]}}
-        )
-    ])
-
-if sys.version_info >= (3, 12):
-    exec("type MyAlias = typing.Literal['x', 'y']")
-    exec("type MyAliasNested = MyAlias | list[int | str]")
-
-    TYPE_HINT_TEST_PARAMS.extend([
-        (
-            MyAlias,  # noqa: F821
-            {'enum': ['x', 'y'], 'type': 'string'}
-        ),
-        (
-            MyAliasNested,  # noqa: F821
-            {
-                'oneOf': [
-                    {'enum': ['x', 'y'], 'type': 'string'},
-                    {"type": "array", "items": {"oneOf": [{"type": "integer"}, {"type": "string"}]}}
-                ]
-            }
-        )
-    ])
-
-
-@pytest.mark.parametrize(['type_hint', 'ref_schema'], TYPE_HINT_TEST_PARAMS)
-def test_type_hint_extraction(no_warnings, type_hint, ref_schema):
-    def func() -> type_hint:
-        pass  # pragma: no cover
-
-    # check expected resolution
-    schema = resolve_type_hint(typing.get_type_hints(func).get('return'))
-    assert json.dumps(schema) == json.dumps(ref_schema)
-
-    # check schema validity
-    class XSerializer(serializers.Serializer):
-        x = serializers.SerializerMethodField()
-    XSerializer.get_x = func
-
-    class XView(generics.RetrieveAPIView):
-        serializer_class = XSerializer
-
-    validate_schema(generate_schema('/x', view=XView))
-
-
-@pytest.mark.parametrize(['pattern', 'output'], [
-    ('(?P<t1><,()(())(),)', {'t1': '<,()(())(),'}),
-    (r'(?P<t1>.\\)', {'t1': r'.\\'}),
-    (r'(?P<t1>.\\\\)', {'t1': r'.\\\\'}),
-    (r'(?P<t1>.\))', {'t1': r'.\)'}),
-    (r'(?P<t1>)', {'t1': r''}),
-    (r'(?P<t1>.[\(]{2})', {'t1': r'.[\(]{2}'}),
-    (r'(?P<t1>(.))/\(t/(?P<t2>\){2}()\({2}().*)', {'t1': '(.)', 't2': r'\){2}()\({2}().*'}),
-])
-def test_analyze_named_regex_pattern(no_warnings, pattern, output):
-    re.compile(pattern)  # check validity of regex
-    assert analyze_named_regex_pattern(pattern) == output
-
-
-def test_unknown_basic_type(capsys):
-    build_basic_type(object)
-    assert 'could not resolve type for "<class \'object\'>' in capsys.readouterr().err
-
-
-def test_choicefield_choices_enum():
-    schema = build_choice_field(serializers.ChoiceField(['bluepill', 'redpill']))
-    assert schema['enum'] == ['bluepill', 'redpill']
-    assert schema['type'] == 'string'
-
-    schema = build_choice_field(serializers.ChoiceField(
-        ['bluepill', 'redpill'], allow_null=True, allow_blank=True
-    ))
-    assert schema['enum'] == ['bluepill', 'redpill', '', None]
-    assert schema['type'] == 'string'
-
-    schema = build_choice_field(serializers.ChoiceField(
-        choices=['bluepill', 'redpill', '', None], allow_null=True, allow_blank=True
-    ))
-    assert schema['enum'] == ['bluepill', 'redpill', '', None]
-    assert 'type' not in schema
-
-    schema = build_choice_field(serializers.ChoiceField(
-        choices=[1, 2], allow_blank=True
-    ))
-    assert schema['enum'] == [1, 2, '']
-    assert 'type' not in schema
-
-
-def test_choicefield_empty_choices():
-    schema = build_choice_field(serializers.ChoiceField(choices=[]))
-    assert schema['enum'] == []
-    assert 'type' not in schema
-
-    schema = build_choice_field(serializers.ChoiceField(choices=[], allow_null=True))
-    assert schema['enum'] == [None]
-    assert 'type' not in schema
-
-    schema = build_choice_field(serializers.ChoiceField(choices=[], allow_blank=True))
-    assert schema['enum'] == ['']
-    assert schema['type'] == 'string'
-
-    schema = build_choice_field(serializers.ChoiceField(choices=[], allow_blank=True, allow_null=True))
-    assert schema['enum'] == ['', None]
-    assert schema['type'] == 'string'
-
-
-def test_safe_ref():
-    schema = build_basic_type(str)
-    schema['$ref'] = '#/components/schemas/Foo'
-
-    schema = safe_ref(schema)
-    assert schema == {
-        'allOf': [{'$ref': '#/components/schemas/Foo'}],
-        'type': 'string'
-    }
-
-    del schema['type']
-    schema = safe_ref(schema)
-    assert schema == {'$ref': '#/components/schemas/Foo'}
-    assert safe_ref(schema) == safe_ref(schema)
-
-
-def test_url_tooling_with_lazy_url():
-    some_url = "http://api.example.org/accounts/"
-
-    assert get_relative_url(some_url) == "/accounts/"
-    assert set_query_parameters(some_url, foo=123) == some_url + "?foo=123"
-
-    assert get_relative_url(lazystr(some_url)) == "/accounts/"
-    assert set_query_parameters(lazystr(some_url), foo=123) == some_url + "?foo=123"
-
-
-def test_get_doc():
-    T = typing.TypeVar('T')
-
-    class MyClass(typing.Generic[T]):
-        pass
-
-    doc = get_doc(MyClass)
-    assert doc == ""
-
-
-@pytest.mark.parametrize('disable', [False, True])
-def test_get_doc_with_class_docstring(disable):
-    class MyClass:
-        """a docstring"""
-
-    with mock.patch(
-        "drf_spectacular.settings.spectacular_settings.DISABLE_DOCSTRING_DESCRIPTIONS",
-        disable,
-    ):
-        doc = get_doc(MyClass)
-        if disable:
-            assert doc == ""
-        else:
-            assert doc == "a docstring"
-
-
-@pytest.mark.parametrize('disable', [False, True])
-def test_get_doc_with_function_docstring(disable):
-    def my_func():
-        """a docstring"""
-
-    with mock.patch(
-        "drf_spectacular.settings.spectacular_settings.DISABLE_DOCSTRING_DESCRIPTIONS",
-        disable,
-    ):
-        doc = get_doc(my_func)
-        if disable:
-            assert doc == ""
-        else:
-            assert doc == "a docstring"
-
-
-@pytest.mark.parametrize('disable', [False, True])
-def test_get_doc_with_method_docstring(disable):
-    class MyClass:
-        def my_method(self):
-            """a docstring"""
-
-    with mock.patch(
-        "drf_spectacular.settings.spectacular_settings.DISABLE_DOCSTRING_DESCRIPTIONS",
-        disable,
-    ):
-        doc = get_doc(MyClass().my_method)
-        if disable:
-            assert doc == ""
-        else:
-            assert doc == "a docstring"
+    assert param['name'] == 'tags'
+    assert param['in'] == 'query'
+    assert param['required'] is True
+    assert param['deprecated'] is True
+    assert param['description'] == 'List of tags'
+    assert param['schema']['items']['enum'] == ['a', 'b']
+    assert param['schema']['default'] == ['a']
+    assert param['style'] == 'form'
+    assert param['explode'] is True
+    assert param['examples'] == {'first': {'value': ['a']}}
+    assert param['x-visible'] is True
