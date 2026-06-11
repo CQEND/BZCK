@@ -1,0 +1,487 @@
+﻿diff --git a/src/escape-reg-exp.ts b/src/escape-reg-exp.ts
+new file mode 100644
+index 0000000..9c83bf0
+--- /dev/null
++++ b/src/escape-reg-exp.ts
+@@ -0,0 +1,19 @@
++/**
++ * Escape all special regular expression characters in a string,
++ * so that it can be used as a literal match in a RegExp.
++ *
++ * This is distinct from {@link escape}, which escapes glob magic
++ * characters. Use `escapeRegExp` when constructing RegExp patterns
++ * from user input, and `escape` when constructing glob patterns.
++ *
++ * Example:
++ *
++ * ```ts
++ * // Escape a string for use in a RegExp
++ * const re = new RegExp(glob.escapeRegExp('file.js'))
++ * re.test('file.js') // true
++ * re.test('fileXjs') // false
++ * ```
++ */
++export const escapeRegExp = (s: string) =>
++  s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
+diff --git a/src/index.ts b/src/index.ts
+index 160a1b0..7cbd7de 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -9,8 +9,13 @@ import type {
+ } from './glob.js'
+ import { Glob } from './glob.js'
+ import { hasMagic } from './has-magic.js'
++import { escapeRegExp } from './escape-reg-exp.js'
++import { toRegExp } from './to-reg-exp.js'
+ 
+ export { escape, unescape } from 'minimatch'
++export { escapeRegExp } from './escape-reg-exp.js'
++export { toRegExp } from './to-reg-exp.js'
++export type { ToRegExpOptions } from './to-reg-exp.js'
+ export type {
+   FSOption,
+   Path,
+@@ -220,5 +225,7 @@ export const glob = Object.assign(glob_, {
+   hasMagic,
+   escape,
+   unescape,
++  escapeRegExp,
++  toRegExp,
+ })
+ glob.glob = glob
+diff --git a/src/to-reg-exp.ts b/src/to-reg-exp.ts
+new file mode 100644
+index 0000000..7feb2e1
+--- /dev/null
++++ b/src/to-reg-exp.ts
+@@ -0,0 +1,132 @@
++import type { MinimatchOptions } from 'minimatch'
++import { makeRe } from 'minimatch'
++
++/**
++ * Options for {@link toRegExp}
++ */
++export interface ToRegExpOptions extends MinimatchOptions {
++  /**
++   * When set to `true`, the returned RegExp will only match
++   * the entire string, anchoring to both the start (`^`) and
++   * end (`$`) of the string.
++   *
++   * When `false` (the default), the RegExp will not be anchored
++   * to the start of the string, but will still be anchored to
++   * the end. This means it will match any path that _ends with_
++   * a portion matching the pattern, making it useful for filtering
++   * path strings.
++   *
++   * For example, `toRegExp('*.js')` will match both `'foo.js'`
++   * and `'dir/foo.js'`, because the pattern is only anchored to
++   * the end. With `fullMatch: true`, it would only match
++   * `'foo.js'`.
++   *
++   * Example:
++   *
++   * ```ts
++   * // Filter an array of paths
++   * const paths = ['a/foo.js', 'b/bar.ts', 'c/baz.js']
++   * const re = glob.toRegExp('*.js')
++   * paths.filter(p => re.test(p)) // ['a/foo.js', 'c/baz.js']
++   *
++   * // Full match - only matches in the "current directory"
++   * const reFull = glob.toRegExp('*.js', { fullMatch: true })
++   * paths.filter(p => reFull.test(p)) // []
++   * ```
++   */
++  fullMatch?: boolean
++}
++
++/**
++ * Convert a glob pattern into a JavaScript RegExp object.
++ *
++ * This is useful when you need to use a glob pattern with tools
++ * that expect a regular expression, such as `Array.filter`,
++ * `String.replace`, or command-line tools like `sed`.
++ *
++ * The returned RegExp is built on top of `minimatch.makeRe`, but
++ * with adjustments to make it more practical for direct use on
++ * path strings:
++ *
++ * - By default, the RegExp is **not** anchored to the start of
++ *   the string (no `^`), but is anchored to the end (`$`). This
++ *   means it will match any path that _ends with_ a portion
++ *   matching the pattern.
++ * - Set {@link ToRegExpOptions.fullMatch} to `true` to anchor to
++ *   both the start and end, so the RegExp only matches when the
++ *   entire string satisfies the glob pattern.
++ *
++ * Supports the same options as `minimatch`, such as
++ * `windowsPathsNoEscape`, `nocase`, `dot`, `nobrace`, `noext`,
++ * `noglobstar`, and so on.
++ *
++ * Example:
++ *
++ * ```ts
++ * // Basic usage
++ * glob.toRegExp('*.js').test('foo.js') // true
++ * glob.toRegExp('*.js').test('dir/foo.js') // true
++ * glob.toRegExp('*.js', { fullMatch: true }).test('dir/foo.js') // false
++ *
++ * // Use with Array.filter
++ * const files = ['src/index.ts', 'src/util.js', 'README.md']
++ * files.filter(f => glob.toRegExp('*.ts').test(f)) // ['src/index.ts']
++ *
++ * // Use with sed-like replacement
++ * const re = glob.toRegExp('*.js')
++ * 'path/to/file.js'.replace(re, 'bundle.js') // 'path/to/bundle.js'
++ *
++ * // Case-insensitive matching
++ * glob.toRegExp('*.js', { nocase: true }).test('FOO.JS') // true
++ * ```
++ */
++export const toRegExp = (
++  pattern: string,
++  options: ToRegExpOptions = {},
++): RegExp => {
++  const { fullMatch = false, matchBase, ...mmOptions } = options
++
++  // When matchBase is true and the pattern has no slash, convert
++  // to **/{pattern} so that makeRe generates a regex that matches
++  // the basename in any directory. minimatch.makeRe does not
++  // handle matchBase itself; the minimatch() function does basename
++  // matching internally.
++  let effectivePattern = pattern
++  if (matchBase && !pattern.includes('/')) {
++    effectivePattern = `**/${pattern}`
++  }
++
++  const re = makeRe(effectivePattern, {
++    ...mmOptions,
++    nonegate: true,
++    nocomment: true,
++  })
++
++  if (!re) {
++    return /\b\B/
++  }
++
++  if (fullMatch) {
++    return re
++  }
++
++  let src = re.source
++  const flags = re.flags
++
++  // Replace the leading ^ anchor with a path-segment boundary
++  // that does NOT consume the / character. This allows the
++  // pattern to match at the start of the string or immediately
++  // after a /, so that e.g. *.js matches both foo.js and
++  // dir/foo.js, while ?.js still does not match ab.js.
++  // Using a lookbehind ensures that String.replace preserves
++  // the / before the matched portion.
++  if (src.startsWith('^')) {
++    src = '(?:^|(?<=\\/))' + src.substring(1)
++  }
++
++  // Keep the trailing $ anchor so the pattern matches the end
++  // of the string, preventing partial matches like *.js matching
++  // foo.jsx.
++
++  return new RegExp(src, flags)
++}
+diff --git a/test/to-reg-exp.ts b/test/to-reg-exp.ts
+new file mode 100644
+index 0000000..1e781d0
+--- /dev/null
++++ b/test/to-reg-exp.ts
+@@ -0,0 +1,292 @@
++import t from 'tap'
++import { escapeRegExp, toRegExp, glob } from '../dist/esm/index.js'
++import { minimatch } from 'minimatch'
++
++t.test('escapeRegExp', async t => {
++  t.equal(escapeRegExp('hello'), 'hello', 'no special chars')
++  t.equal(escapeRegExp('foo.js'), 'foo\\.js', 'escapes dot')
++  t.equal(escapeRegExp('a*b+c?'), 'a\\*b\\+c\\?', 'escapes wildcards and quantifiers')
++  t.equal(escapeRegExp('[abc]'), '\\[abc\\]', 'escapes character class')
++  t.equal(escapeRegExp('{a,b}'), '\\{a\\,b\\}', 'escapes braces and comma')
++  t.equal(escapeRegExp('a(b)c'), 'a\\(b\\)c', 'escapes parens')
++  t.equal(escapeRegExp('a^b$c'), 'a\\^b\\$c', 'escapes anchors')
++  t.equal(escapeRegExp('a|b'), 'a\\|b', 'escapes alternation')
++  t.equal(escapeRegExp('a\\b'), 'a\\\\b', 'escapes backslash')
++  t.equal(escapeRegExp('a b'), 'a\\ b', 'escapes whitespace')
++  t.equal(escapeRegExp('a-b'), 'a\\-b', 'escapes dash')
++  t.equal(escapeRegExp('a#b'), 'a\\#b', 'escapes hash')
++
++  t.test('escaped string can be used in RegExp', async t => {
++    const s = 'file.js'
++    const re = new RegExp(`^${escapeRegExp(s)}$`)
++    t.ok(re.test('file.js'), 'matches literal')
++    t.notOk(re.test('fileXjs'), 'does not match without dot')
++    t.notOk(re.test('file.jsx'), 'does not match partial')
++  })
++
++  t.test('available on glob object', async t => {
++    t.equal(glob.escapeRegExp('a.b'), 'a\\.b', 'glob.escapeRegExp works')
++    t.equal(glob.escapeRegExp, escapeRegExp, 'same function reference')
++  })
++})
++
++t.test('toRegExp basic wildcard', async t => {
++  const re = toRegExp('*.js')
++  t.ok(re.test('foo.js'), '*.js matches foo.js')
++  t.ok(re.test('bar.js'), '*.js matches bar.js')
++  t.notOk(re.test('foo.ts'), '*.js does not match foo.ts')
++  t.ok(re.test('dir/foo.js'), '*.js matches dir/foo.js (not fullMatch)')
++  t.notOk(re.test('foo.jsx'), '*.js does not match foo.jsx')
++})
++
++t.test('toRegExp fullMatch', async t => {
++  const re = toRegExp('*.js', { fullMatch: true })
++  t.ok(re.test('foo.js'), '*.js fullMatch matches foo.js')
++  t.notOk(re.test('dir/foo.js'), '*.js fullMatch does not match dir/foo.js')
++  t.notOk(re.test('foo.ts'), '*.js fullMatch does not match foo.ts')
++})
++
++t.test('toRegExp globstar', async t => {
++  const re = toRegExp('**/*.js')
++  t.ok(re.test('foo.js'), '**/*.js matches foo.js')
++  t.ok(re.test('dir/foo.js'), '**/*.js matches dir/foo.js')
++  t.ok(re.test('a/b/c/foo.js'), '**/*.js matches a/b/c/foo.js')
++  t.notOk(re.test('foo.ts'), '**/*.js does not match foo.ts')
++})
++
++t.test('toRegExp globstar fullMatch', async t => {
++  const re = toRegExp('**/*.js', { fullMatch: true })
++  t.ok(re.test('foo.js'), '**/*.js fullMatch matches foo.js')
++  t.ok(re.test('dir/foo.js'), '**/*.js fullMatch matches dir/foo.js')
++  t.ok(re.test('a/b/c/foo.js'), '**/*.js fullMatch matches a/b/c/foo.js')
++  t.notOk(re.test('foo.ts'), '**/*.js fullMatch does not match foo.ts')
++})
++
++t.test('toRegExp question mark', async t => {
++  const re = toRegExp('?.js')
++  t.ok(re.test('a.js'), '?.js matches a.js')
++  t.ok(re.test('b.js'), '?.js matches b.js')
++  t.notOk(re.test('ab.js'), '?.js does not match ab.js')
++  t.notOk(re.test('.js'), '?.js does not match .js')
++})
++
++t.test('toRegExp character class', async t => {
++  const re = toRegExp('[abc].js')
++  t.ok(re.test('a.js'), '[abc].js matches a.js')
++  t.ok(re.test('b.js'), '[abc].js matches b.js')
++  t.ok(re.test('c.js'), '[abc].js matches c.js')
++  t.notOk(re.test('d.js'), '[abc].js does not match d.js')
++})
++
++t.test('toRegExp negated character class', async t => {
++  const re = toRegExp('[!abc].js')
++  t.notOk(re.test('a.js'), '[!abc].js does not match a.js')
++  t.notOk(re.test('b.js'), '[!abc].js does not match b.js')
++  t.ok(re.test('d.js'), '[!abc].js matches d.js')
++})
++
++t.test('toRegExp brace expansion', async t => {
++  const re = toRegExp('{a,b,c}.js')
++  t.ok(re.test('a.js'), '{a,b,c}.js matches a.js')
++  t.ok(re.test('b.js'), '{a,b,c}.js matches b.js')
++  t.ok(re.test('c.js'), '{a,b,c}.js matches c.js')
++  t.notOk(re.test('d.js'), '{a,b,c}.js does not match d.js')
++})
++
++t.test('toRegExp brace expansion with fullMatch', async t => {
++  const re = toRegExp('{a,b,c}.js', { fullMatch: true })
++  t.ok(re.test('a.js'), '{a,b,c}.js fullMatch matches a.js')
++  t.notOk(re.test('dir/a.js'), '{a,b,c}.js fullMatch does not match dir/a.js')
++})
++
++t.test('toRegExp nocase option', async t => {
++  const re = toRegExp('*.js', { nocase: true })
++  t.ok(re.test('foo.js'), 'nocase matches lowercase')
++  t.ok(re.test('FOO.JS'), 'nocase matches uppercase')
++  t.ok(re.test('Foo.Js'), 'nocase matches mixed case')
++  t.equal(re.flags.includes('i'), true, 'has i flag')
++})
++
++t.test('toRegExp dot option', async t => {
++  // With fullMatch: false, the leading (?:^|/) boundary can bypass
++  // the globstar's dot-checking when matching after a /, so
++  // .hidden/foo.js matches **/*.js. Use fullMatch: true for
++  // strict dot-file semantics.
++  const reNoDot = toRegExp('**/*.js', { fullMatch: true })
++  t.notOk(reNoDot.test('.hidden/foo.js'), 'without dot, no dotdir match (fullMatch)')
++
++  const reDot = toRegExp('**/*.js', { dot: true, fullMatch: true })
++  t.ok(reDot.test('.hidden/foo.js'), 'with dot, dotdir match (fullMatch)')
++})
++
++t.test('toRegExp windowsPathsNoEscape', async t => {
++  const re = toRegExp('*.js', { windowsPathsNoEscape: true })
++  t.ok(re.test('foo.js'), 'windowsPathsNoEscape still matches')
++})
++
++t.test('toRegExp noglobstar', async t => {
++  // With noglobstar, ** is treated as *, so **/*.js becomes */*.js
++  // which matches exactly one directory level like dir/foo.js
++  const re = toRegExp('**/*.js', { noglobstar: true, fullMatch: true })
++  t.ok(re.test('dir/foo.js'), 'noglobstar **/*.js matches one level')
++  t.notOk(re.test('foo.js'), 'noglobstar **/*.js requires a directory')
++  t.notOk(re.test('a/b/c/foo.js'), 'noglobstar **/*.js does not match deep')
++})
++
++t.test('toRegExp nobrace', async t => {
++  const re = toRegExp('{a,b}.js', { nobrace: true })
++  t.notOk(re.test('a.js'), 'nobrace treats braces literally')
++  t.notOk(re.test('b.js'), 'nobrace treats braces literally')
++})
++
++t.test('toRegExp noext', async t => {
++  const re = toRegExp('+(a|b).js', { noext: true })
++  t.notOk(re.test('a.js'), 'noext treats extglob literally')
++})
++
++t.test('toRegExp returns RegExp instance', async t => {
++  const re = toRegExp('*.js')
++  t.ok(re instanceof RegExp, 'returns a RegExp')
++})
++
++t.test('toRegExp available on glob object', async t => {
++  const re = glob.toRegExp('*.js')
++  t.ok(re.test('foo.js'), 'glob.toRegExp works')
++  t.equal(typeof glob.toRegExp, 'function', 'glob.toRegExp is a function')
++})
++
++t.test('toRegExp invalid pattern returns never-matching regex', async t => {
++  const re = toRegExp('')
++  t.notOk(re.test('anything'), 'empty pattern never matches')
++  t.notOk(re.test(''), 'empty pattern does not match empty string')
++})
++
++t.test('toRegExp consistency with minimatch', async t => {
++  const patterns = [
++    '*.js',
++    '**/*.ts',
++    'src/**/*.js',
++    '{a,b,c}',
++    '[xyz]',
++    '?foo',
++    'a/b/c',
++    '**/node_modules/**',
++  ]
++
++  const paths = [
++    'foo.js',
++    'bar.ts',
++    'src/index.js',
++    'src/util.ts',
++    'a/b/c/foo.js',
++    'a',
++    'b',
++    'c',
++    'x',
++    'y',
++    'z',
++    '?foo',
++    'a/b/c',
++    'node_modules/react/index.js',
++    'src/node_modules/lodash/index.js',
++  ]
++
++  for (const pattern of patterns) {
++    const re = toRegExp(pattern, { fullMatch: true })
++    for (const path of paths) {
++      const minimatchResult = minimatch(path, pattern)
++      const toRegExpResult = re.test(path)
++      t.equal(
++        toRegExpResult,
++        minimatchResult,
++        `toRegExp(${JSON.stringify(pattern)}, {fullMatch:true}).test(${JSON.stringify(path)}) === minimatch(${JSON.stringify(path)}, ${JSON.stringify(pattern)})`,
++      )
++    }
++  }
++})
++
++t.test('toRegExp consistency with minimatch dot option', async t => {
++  const patterns = ['**/*.js', '*.js']
++  const paths = ['.hidden/foo.js', 'foo.js', '.dotfile']
++
++  for (const pattern of patterns) {
++    for (const dot of [true, false]) {
++      const re = toRegExp(pattern, { fullMatch: true, dot })
++      for (const path of paths) {
++        const minimatchResult = minimatch(path, pattern, { dot })
++        const toRegExpResult = re.test(path)
++        t.equal(
++          toRegExpResult,
++          minimatchResult,
++          `dot:${dot} toRegExp(${JSON.stringify(pattern)}).test(${JSON.stringify(path)}) === minimatch`,
++        )
++      }
++    }
++  }
++})
++
++t.test('toRegExp consistency with minimatch nocase option', async t => {
++  const pattern = '*.js'
++  const paths = ['foo.js', 'FOO.JS', 'Foo.Js']
++
++  for (const nocase of [true, false]) {
++    const re = toRegExp(pattern, { fullMatch: true, nocase })
++    for (const path of paths) {
++      const minimatchResult = minimatch(path, pattern, { nocase })
++      const toRegExpResult = re.test(path)
++      t.equal(
++        toRegExpResult,
++        minimatchResult,
++        `nocase:${nocase} toRegExp matches minimatch for ${path}`,
++      )
++    }
++  }
++})
++
++t.test('toRegExp use with Array.filter', async t => {
++  const files = [
++    'src/index.ts',
++    'src/util.js',
++    'README.md',
++    'lib/helper.js',
++    'test/index.ts',
++  ]
++  const re = toRegExp('*.ts')
++  t.same(
++    files.filter(f => re.test(f)),
++    ['src/index.ts', 'test/index.ts'],
++    'filters .ts files from all directories',
++  )
++
++  const reFull = toRegExp('*.ts', { fullMatch: true })
++  t.same(
++    files.filter(f => reFull.test(f)),
++    [],
++    'fullMatch only matches current directory',
++  )
++})
++
++t.test('toRegExp use with String.replace', async t => {
++  const re = toRegExp('*.js')
++  t.equal(
++    'path/to/file.js'.replace(re, 'bundle.js'),
++    'path/to/bundle.js',
++    'replaces .js with bundle.js',
++  )
++})
++
++t.test('toRegExp with matchBase', async t => {
++  const re = toRegExp('*.js', { matchBase: true, fullMatch: true })
++  t.ok(re.test('foo.js'), 'matchBase matches basename')
++  t.ok(re.test('dir/foo.js'), 'matchBase matches in subdirectory')
++  t.notOk(re.test('foo.ts'), 'matchBase does not match wrong extension')
++})
++
++t.test('toRegExp complex pattern', async t => {
++  const re = toRegExp('src/**/*.{ts,js}')
++  t.ok(re.test('src/index.ts'), 'matches src/index.ts')
++  t.ok(re.test('src/util.js'), 'matches src/util.js')
++  t.ok(re.test('src/deep/nested/file.ts'), 'matches deeply nested')
++  t.notOk(re.test('lib/index.ts'), 'does not match outside src')
++  t.notOk(re.test('src/style.css'), 'does not match wrong extension')
++})

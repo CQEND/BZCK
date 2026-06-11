@@ -1,0 +1,390 @@
+﻿diff --git a/docs/windows-pattern-analysis.md b/docs/windows-pattern-analysis.md
+new file mode 100644
+index 0000000..9520157
+--- /dev/null
++++ b/docs/windows-pattern-analysis.md
+@@ -0,0 +1,384 @@
++# Pattern 类在 Windows 平台下的路径处理分析
++
++本文档对 `src/pattern.ts` 中 `Pattern` 类的 Windows 路径相关逻辑进行详细分析。分析的重点是构造函数中的规范化过程、`isUNC()` / `isDrive()` / `isAbsolute()` / `root()` 四个核心方法，以及它们在不同输入下的交互关系。
++
++---
++
++## 1. 路径类型识别：UNC vs 本地驱动器
++
++在 Windows 上，glob 模式的前缀可能表示三种"绝对路径"含义：
++
++| 示例输入              | 语义                                 |
++| --------------------- | ------------------------------------ |
++| `//server/share/foo`  | UNC 路径（网络共享）                 |
++| `C:/foo/bar`          | 带盘符的本地绝对路径                 |
++| `/foo/bar`            | 以 `/` 开头的相对根（POSIX 风格绝对） |
++
++`Pattern` 通过构造函数外部（上游解析器）先把输入按 `/` 切成字符串数组，再在构造函数内部依据下表规则重新"合并"成带卷标信息的 `patternParts`。
++
++### 1.1 `isUNC()` 的判定算法
++
++代码位置：[pattern.ts:178-191](file:///app/src/pattern.ts#L178-L191)
++
++```ts
++isUNC(): boolean {
++  const pl = this.#patternList
++  return this.#isUNC !== undefined ? this.#isUNC
++    : (this.#isUNC =
++        this.#platform === 'win32' &&
++        this.#index === 0 &&
++        pl[0] === '' &&
++        pl[1] === '' &&
++        typeof pl[2] === 'string' && !!pl[2] &&
++        typeof pl[3] === 'string' && !!pl[3])
++}
++```
++
++判定条件分解：
++
++1. **必须运行在 win32 平台**：UNC 路径是 Windows 专属语义，非 Windows 平台永远返回 `false`。
++2. **必须从第 0 个片段开始**：`#index === 0`。`rest()` 产生的子 `Pattern` 不会再被当作 UNC 根。
++3. **`pl[0] === '' && pl[1] === ''`**：这表示原模式以 `//` 开头（连续两个空段是 `//` split 后的标志性产物）。
++4. **`pl[2]` 与 `pl[3]` 为非空字符串**：分别作为 **host**（服务器名）与 **share**（共享名）。两个都必须存在且非空，否则只靠 `//` 不能构成合法 UNC。
++
++这意味着输入必须至少形如 `//host/share`（split 后产生 `['', '', 'host', 'share']`）才会被识别为 UNC。像 `//host`、`//`、`//host/` 都不会被当作 UNC——因为 `pl[3]` 为空或缺失。
++
++### 1.2 `isDrive()` 的判定算法
++
++代码位置：[pattern.ts:201-211](file:///app/src/pattern.ts#L201-L211)
++
++```ts
++isDrive(): boolean {
++  const pl = this.#patternList
++  return this.#isDrive !== undefined ? this.#isDrive
++    : (this.#isDrive =
++        this.#platform === 'win32' &&
++        this.#index === 0 &&
++        this.length > 1 &&
++        typeof pl[0] === 'string' &&
++        /^[a-z]:$/i.test(pl[0]))
++}
++```
++
++判定条件分解：
++
++1. **win32 平台**，且**必须从第 0 个片段开始**。
++2. **`length > 1`**：光是 `'C:'` 不足以被识别为驱动器路径；必须有后续片段（即 `C:/...` 形式）。
++3. **`pl[0]` 匹配正则 `^[a-z]:$`**：形如 `c:`、`D:` 等单字母加冒号。
++
++注意：`isDrive()` 依赖 `length > 1`，所以像 `'C:'` 这种"裸盘符"模式不会被当作驱动器路径处理，代码中的 `XXX` 注释也指出 `c:*` 这种形式暂未支持。
++
++### 1.3 `isAbsolute()` 的判定算法
++
++代码位置：[pattern.ts:219-227](file:///app/src/pattern.ts#L219-L227)
++
++```ts
++isAbsolute(): boolean {
++  const pl = this.#patternList
++  return this.#isAbsolute !== undefined ? this.#isAbsolute
++    : (this.#isAbsolute =
++        (pl[0] === '' && pl.length > 1) ||
++        this.isDrive() ||
++        this.isUNC())
++}
++```
++
++三个条件**任一满足**即被视为绝对：
++
++1. `pl[0] === '' && pl.length > 1`：即模式以 `/` 开头且后面还有内容（POSIX 风格绝对路径）。
++2. `isDrive()` 返回 `true`。
++3. `isUNC()` 返回 `true`。
++
++三者顺序上先判断 POSIX 形式，再判断 Drive 和 UNC——但实际上 UNC 也满足第一条（`pl[0] === '' && pl.length > 1`），所以 UNC 会被第一条"短路"命中；Drive 则因 `pl[0]` 非空（形如 `'C:'`），只能通过后两条命中。
++
++**关键设计要点**：三个布尔字段都有懒缓存（`#isUNC` / `#isDrive` / `#isAbsolute`），并且 `rest()` 构造的子 `Pattern` 会直接继承这些缓存值，避免在子视图上重复计算。
++
++---
++
++## 2. 构造函数的规范化：将离散片段合并为"卷 + 路径"
++
++代码位置：[pattern.ts:42-105](file:///app/src/pattern.ts#L42-L105)
++
++规范化逻辑**只在 `#index === 0`（即初始构造）**时触发。其核心目标是把上游传入的按 `/` 分割后的 `['', '', 'host', 'share', 'x', ...]` 或 `['C:', 'x', ...]` 重新组合成一个带斜杠的"卷标"字符串，作为 `patternList[0]`，后面保留普通路径片段。
++
++### 2.1 通用流程
++
++```
++if (#index === 0) {
++  if (isUNC())        => UNC 规范化
++  else if (isDrive() || isAbsolute()) => Drive / POSIX 绝对 规范化
++}
++```
++
++### 2.2 UNC 规范化（`isUNC()` 分支）
++
++```ts
++const [p0, p1, p2, p3, ...prest] = this.#patternList
++const [g0, g1, g2, g3, ...grest] = this.#globList
++if (prest[0] === '') {           // 原模式末尾以 '/' 结尾
++  prest.shift()
++  grest.shift()
++}
++const p = [p0, p1, p2, p3, ''].join('/')   // =>  '//host/share/'
++const g = [g0, g1, g2, g3, ''].join('/')
++this.#patternList = [p, ...prest]
++this.#globList    = [g, ...grest]
++```
++
++关键点：
++
++- 把前四个片段 `['', '', 'host', 'share']` 拼接成一个字符串 `'//host/share/'`，作为新的 `patternList[0]`。
++- 如果原始输入以 `/` 结尾（`prest[0] === ''`），则丢弃那个尾随空段——因为"卷"本身已经带 `/`。
++- `globList` 与 `patternList` 保持结构对称，以便 `globString()` 还原出原始模式字符串。
++
++### 2.3 Drive / POSIX 绝对规范化（`isDrive() || isAbsolute()` 分支）
++
++```ts
++const [p1, ...prest] = this.#patternList
++const [g1, ...grest] = this.#globList
++if (prest[0] === '') {
++  prest.shift()
++  grest.shift()
++}
++const p = `${p1 as string}/`      // Drive:  'C:'   => 'C:/'
++const g = `${g1}/`                // POSIX:  ''    => '/'
++this.#patternList = [p, ...prest]
++this.#globList    = [g, ...grest]
++```
++
++关键点：
++
++- 对 Drive 输入 `['C:', 'foo']`：`p1 = 'C:'` → `'C:/'`，后续保留 `['foo']`。
++- 对 POSIX 绝对输入 `['', 'foo']`：`p1 = ''` → `'/'`，后续保留 `['foo']`。
++- 同样处理尾随 `/` 的空段丢弃。
++
++### 2.4 卷信息"保留"的方式
++
++规范化后，`patternList[0]` 不再是单个语义片段，而是**一个复合字符串**：
++- UNC：`'//server/share/'`（同时承载 host 与 share）
++- Drive：`'C:/'`
++- POSIX 根：`'/'`
++
++这个"卷"字符串会被 `root()` 方法原样返回（见第 3 节），它同时承担了两个角色：
++1. **作为路径匹配的前缀**——glob 遍历时以它作为起点。
++2. **作为类型判定的依据**——因为规范化只在 `#index === 0` 时执行一次，`rest()` 产生的子视图直接继承父对象的 `#isUNC` / `#isDrive` / `#isAbsolute` 缓存，不需要再次解析字符串。
++
++---
++
++## 3. `root()` 返回值与平台差异
++
++代码位置：[pattern.ts:232-239](file:///app/src/pattern.ts#L232-L239)
++
++```ts
++root(): string {
++  const p = this.#patternList[0]
++  return (typeof p === 'string' && this.isAbsolute() && this.#index === 0) ? p : ''
++}
++```
++
++### 3.1 触发条件
++
++三个条件**同时满足**才返回非空字符串：
++
++1. `patternList[0]` 是字符串（非 RegExp / GLOBSTAR）；
++2. `isAbsolute()` 为 `true`；
++3. `#index === 0`（即该 Pattern 对象视图位于起始位置）。
++
++否则返回 `''`，表示"无根"或"已经越过根"。
++
++### 3.2 跨平台对比表
++
++假设上游对同一模式按 `/` 分割传入，下表展示在 `'win32'` 与 `'linux'` 平台下 `root()` 的行为差异：
++
++| 原始模式            | win32 下 `root()` 返回     | linux 下 `root()` 返回 | 说明                                  |
++| ------------------- | -------------------------- | ---------------------- | ------------------------------------- |
++| `//server/share/a`  | `'//server/share/'`        | `'/'`                  | linux 不认 UNC，只按普通 `/` 绝对处理 |
++| `C:/foo/bar`        | `'C:/'`                    | `''`                   | linux 不认盘符                        |
++| `/etc/hosts`        | `'/'`                      | `'/'`                  | 两者一致                              |
++| `foo/bar`           | `''`                       | `''`                   | 相对路径                              |
++| `//./foo`           | `'/'`（以 `/` 绝对处理）   | `'/'`                  | host/share 为 `.`/`foo`？不，pl[2]=`.` pl[3]=`foo` 都非空，win32 下会被当作 UNC，`root()` 返回 `'//./foo/'` |
++
++### 3.3 设计意图
++
++- **win32 下保留完整卷标**：Windows 上同一主机内不同卷（C:、D:、\server\share）是互相独立的命名空间，glob 匹配必须知道"起点"是什么，才能决定遍历文件系统时从哪个根开始。
++- **非 win32 下退化到 POSIX 语义**：在 Linux/macOS 上，`C:/foo` 就是一个普通名称含冒号的相对路径（或根本不合法），没有卷概念。
++- **`root()` 只在 `#index === 0` 时有意义**：子视图（`rest()`）已经跨过了卷标，再问"根"是没有意义的——所以它们返回空串。
++
++---
++
++## 4. 潜在边缘情况
++
++以下列出实现中需要使用者注意或可能产生意外的场景。
++
++### 4.1 仅 `//` 开头但缺少 host 或 share
++
++输入如：
++
++- `//` → split 后 `['', '', '']`
++- `//host` → `['', '', 'host']`
++- `//host/` → `['', '', 'host', '']`
++
++这些情形中 `pl[3]` 为空或不存在，`isUNC()` 返回 `false`。但 `pl[0] === ''` 且 `pl.length > 1`，所以会被 `isAbsolute()` 按 POSIX 形式当作**普通绝对路径**处理：
++
++- `//host` → 规范化为 `['/', 'host']`，`root()` 返回 `'/'`。
++- 在 Windows 上这实际上**丢失了 UNC 语义**，但从另一个角度看这也是合理的——`//host` 本身就不是合法 UNC。
++
++### 4.2 `//` 作为相对路径（POSIX 语义下 `//` 等于 `/`）
++
++POSIX 规定 `//` 在路径开头可能有实现定义语义，但大多数 UNIX 系统把 `//foo` 等同于 `/foo`。本实现中非 win32 平台下 `//foo` 会被标准化为 `['/', 'foo']`，`root()` 返回 `'/'`——与 POSIX 常见实现一致。
++
++### 4.3 裸盘符 `'C:'`（无后续路径）
++
++`isDrive()` 要求 `length > 1`，所以仅 `['C:']`（即输入 `'C:'`）时：
++
++- `isDrive()` = `false`
++- `isAbsolute()` = `false`（`pl[0]` 非空，且 Drive/UNC 都 false）
++- `root()` = `''`
++
++这意味着 `'C:'` 被当作**相对路径**处理——符合 Windows CMD 中 `C:` 表示"当前 C 盘目录"的语义，但上游调用者若期望绝对路径则需特别注意。
++
++### 4.4 Drive + UNC 在 `rest()` 子视图中的传播
++
++`rest()` 中：
++
++```ts
++this.#rest.#isAbsolute = this.#isAbsolute
++this.#rest.#isUNC = this.#isUNC
++this.#rest.#isDrive = this.#isDrive
++```
++
++子对象**没有经过构造函数的规范化分支**（因为 `#index !== 0`），但通过显式拷贝缓存字段，保持了"子视图也是绝对路径"的语义。然而子视图的 `root()` 返回值为空（见 §3.1），这是有意的——卷信息只在顶层可读取。
++
++### 4.5 盘符大小写与正则
++
++`/^[a-z]:$/i` 大小写不敏感，`c:`、`C:`、`D:` 均可匹配，但形如 `AB:`（双字母）、`1:`（数字）则不匹配，与 Windows 实际行为一致。
++
++### 4.6 `patternList[0]` 为 RegExp 或 GLOBSTAR
++
++`root()` 对 `typeof p === 'string'` 有显式检查。如果模式的第一个片段是正则或 GLOBSTAR，`root()` 返回 `''`——这意味着**带通配符的"伪根"不会被当作根**（例如 `/*/foo` 中 `patternList[0]` 是 `''` 而不是 GLOBSTAR，所以仍然返回 `'/'`；但若输入是形如 `C?:/foo` 被解析为 RegExp 起始，则返回 `''`）。
++
++---
++
++## 5. 具体示例推演
++
++### 示例 1：`'//server/**/*.js'`（win32 平台）
++
++**Step 1 — 上游按 `/` 分割**
++
++```
++patternList = ['', '', 'server', '**', '*.js']
++// 注：'**' 会被上游转换为 GLOBSTAR，'*.js' 会被转换为 RegExp
++// 假设传入为：['', '', 'server', GLOBSTAR, /^.*\.js$/]
++globList    = ['', '', 'server', '**', '*.js']
++```
++
++**Step 2 — 构造函数进入规范化分支**
++
++`#index === 0`，进入：
++
++- 调用 `isUNC()`：
++  - `platform === 'win32'` ✓
++  - `pl[0] === ''` ✓，`pl[1] === ''` ✓
++  - `pl[2] === 'server'` 非空字符串 ✓
++  - `pl[3]` 是 GLOBSTAR（非字符串）✗
++
++⚠ 注意：在该实现中 `pl[3]` 必须是 `typeof === 'string' && !!pl[3]`，而 `**` 会被转为 GLOBSTAR（symbol），因此 `pl[3]` 不满足字符串要求。
++
++这会产生一个**实际的边缘情况**：`//server/**/*.js` 的 `pl[3]` 是 GLOBSTAR，不满足 `isUNC()` 的字符串判定，**不会被识别为 UNC**。此时：
++
++- `isAbsolute()` 会因 `pl[0] === '' && pl.length > 1` 而返回 true。
++- 落到 `isDrive() || isAbsolute()` 的 `isAbsolute()` 分支进行 POSIX 风格规范化。
++
++**Step 3 — POSIX 规范化分支（本示例实际走的路径）**
++
++```
++p1 = ''                       // 第一个片段
++prest = ['', 'server', GLOBSTAR, /^.*\.js$/]
++检查 prest[0] === '' ? YES   // 丢弃
++p = '' + '/' = '/'
++最终 patternList = ['/', 'server', GLOBSTAR, /^.*\.js$/]
++     globList    = ['/', 'server', '**',       '*.js']
++```
++
++**Step 4 — `root()` 调用**
++
++- `patternList[0] === '/'` 为字符串 ✓
++- `isAbsolute()` = true ✓
++- `#index === 0` ✓
++- 返回 `'/'`
++
++**结论**：在 win32 上若 UNC 路径的 share 位置出现通配符（如 `**`），该 UNC 识别会**失败**，模式被退化为普通 `/` 绝对路径处理。
++
++---
++
++### 示例 2：`'C:/foo/bar/**'`（win32 平台）
++
++**Step 1 — 上游按 `/` 分割**
++
++```
++patternList = ['C:', 'foo', 'bar', '**']
++// '**' 被转为 GLOBSTAR：
++patternList = ['C:', 'foo', 'bar', GLOBSTAR]
++globList    = ['C:', 'foo', 'bar', '**']
++```
++
++**Step 2 — 构造函数进入规范化分支**
++
++`#index === 0`，依次判断：
++
++- `isUNC()`：`pl[0] === 'C:'` 非空 → false。
++- `isDrive()`：
++  - `platform === 'win32'` ✓
++  - `#index === 0` ✓
++  - `length = 4 > 1` ✓
++  - `pl[0] === 'C:'` 匹配 `/^[a-z]:$/i` ✓
++  - 返回 true。
++
++**Step 3 — Drive 规范化**
++
++```
++p1 = 'C:'
++prest = ['foo', 'bar', GLOBSTAR]
++检查 prest[0] === '' ? NO   // 不丢弃
++p = 'C:' + '/' = 'C:/'
++最终 patternList = ['C:/', 'foo', 'bar', GLOBSTAR]
++     globList    = ['C:/', 'foo', 'bar', '**']
++length = 4
++```
++
++**Step 4 — 相关方法调用结果**
++
++- `root()`：`patternList[0] === 'C:/'`，字符串，`isAbsolute()` = true，`#index === 0` → 返回 `'C:/'`。
++- `isDrive()`：缓存 true。
++- `isUNC()`：缓存 false。
++- `isAbsolute()`：因 `isDrive()` 为 true → true。
++
++**Step 5 — 子视图（`rest()`）行为**
++
++调用 `rest()` 产生的子 `Pattern`：
++
++- `#index = 1`
++- `#patternList` 仍是 `['C:/', 'foo', 'bar', GLOBSTAR]`（共享底层数组）
++- `#isAbsolute / #isUNC / #isDrive` 从父对象拷贝为 true/false/true
++- `pattern()` 返回 `'foo'`
++- `root()` 返回 `''`（因为 `#index !== 0`）
++
++**Step 6 — 再次 `rest()`**
++
++经过三次 `rest()` 后 `#index = 4` 不合法，最后一次合法 `rest()`（`#index = 3`）的 `pattern()` 返回 `GLOBSTAR`，`isGlobstar()` 返回 true。
++
++**结论**：`C:/foo/bar/**` 在 win32 上被正确识别为 Drive 型绝对路径，卷标规范化为 `'C:/'`，后续片段保留原有语义，子视图通过缓存字段继承了"绝对路径"属性。
++
++---
++
++## 6. 小结
++
++| 方法         | 职责                                       | 关键条件                                   |
++| ------------ | ------------------------------------------ | ------------------------------------------ |
++| `isUNC()`    | 识别 `//host/share/...` 网络路径（win32）   | 前两空段 + host/share 非空字符串           |
++| `isDrive()`  | 识别 `C:/...` 本地路径（win32）             | pl[0] 形如 `X:` + length > 1               |
++| `isAbsolute()` | 总括判定                                  | `/` 开头 或 Drive 或 UNC                   |
++| `root()`     | 暴露规范化后的"卷"字符串                    | 字符串首段 + isAbsolute + #index === 0     |
++| 构造函数     | 规范化：合并卷信息到 `patternList[0]`       | 仅在 `#index === 0` 时执行一次             |
++
++核心设计哲学：**在构造时一次性把"卷"信息折叠进数组首元素，后续子视图仅通过懒缓存字段判断类型**，从而兼顾运行效率与匹配阶段的可读性。

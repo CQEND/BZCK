@@ -1,0 +1,58 @@
+﻿diff --git a/src/has-magic.ts b/src/has-magic.ts
+index 0d93f38..0fec72f 100644
+--- a/src/has-magic.ts
++++ b/src/has-magic.ts
+@@ -1,6 +1,10 @@
+ import { Minimatch } from 'minimatch'
+ import type { GlobOptions } from './glob.js'
+ 
++const removeEscapes = (pattern: string): string => {
++  return pattern.replace(/\\./g, 'x')
++}
++
+ /**
+  * Return true if the patterns provided contain any magic glob characters,
+  * given the options provided.
+@@ -17,7 +21,12 @@ export const hasMagic = (
+   options: GlobOptions = {},
+ ): boolean => {
+   for (const p of Array.isArray(pattern) ? pattern : [pattern]) {
+-    if (new Minimatch(p, options).hasMagic()) return true
++    if (options.windowsPathsNoEscape) {
++      if (new Minimatch(p, options).hasMagic()) return true
++    } else {
++      const cleaned = removeEscapes(p)
++      if (new Minimatch(cleaned, options).hasMagic()) return true
++    }
+   }
+   return false
+ }
+diff --git a/test/has-magic.ts b/test/has-magic.ts
+index 6e7ea01..c4d35aa 100644
+--- a/test/has-magic.ts
++++ b/test/has-magic.ts
+@@ -37,4 +37,24 @@ t.test('detect magic in glob patterns', async t => {
+     glob.hasMagic('{a,b}', { nobrace: true, magicalBraces: true }),
+     'magical braces not magic in {a,b} nobrace:true',
+   )
++  t.notOk(
++    glob.hasMagic('\\{a,b\\}'),
++    'escaped braces not magic in \\{a,b\\}',
++  )
++  t.notOk(
++    glob.hasMagic('\\*'),
++    'escaped star not magic in \\*',
++  )
++  t.notOk(
++    glob.hasMagic('\\?'),
++    'escaped question not magic in \\?',
++  )
++  t.notOk(
++    glob.hasMagic('\\[a\\]'),
++    'escaped bracket not magic in \\[a\\]',
++  )
++  t.ok(
++    glob.hasMagic('\\{a,b\\}*'),
++    'escaped braces with unescaped star is magic',
++  )
+ })

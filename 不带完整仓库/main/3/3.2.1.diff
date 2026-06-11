@@ -1,0 +1,512 @@
+﻿diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..cb2cf74 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -9,9 +9,9 @@ import {
+   PathScurryPosix,
+   PathScurryWin32,
+ } from 'path-scurry'
+-import type { IgnoreLike } from './ignore.js'
++import { Ignore, type IgnoreLike, loadGitignore } from './ignore.js'
+ import { Pattern } from './pattern.js'
+-import { GlobStream, GlobWalker } from './walker.js'
++import { GlobStream, GlobWalker, type GlobWalkerOpts } from './walker.js'
+ 
+ export type MatchSet = Minimatch['set']
+ export type GlobParts = Exclude<Minimatch['globParts'], undefined>
+@@ -27,6 +27,27 @@ const defaultPlatform: NodeJS.Platform =
+     process.platform
+   : 'linux'
+ 
++const mergeIgnores = (
++  ignore: string | string[] | IgnoreLike | undefined,
++  gitignore: string[],
++  opts: GlobWalkerOpts,
++): string | string[] | IgnoreLike | undefined => {
++  if (!gitignore.length) return ignore
++  if (!ignore) return gitignore
++  if (typeof ignore === 'string') return [...gitignore, ignore]
++  if (Array.isArray(ignore)) return [...gitignore, ...ignore]
++  const git = new Ignore(gitignore, opts)
++  return {
++    ignored: p => !!git.ignored?.(p) || !!ignore.ignored?.(p),
++    childrenIgnored: p =>
++      !!git.childrenIgnored?.(p) || !!ignore.childrenIgnored?.(p),
++    add: pattern => {
++      git.add?.(pattern)
++      ignore.add?.(pattern)
++    },
++  }
++}
++
+ /**
+  * A `GlobOptions` object may be provided to any of the exported methods, and
+  * must be provided to the `Glob` constructor.
+@@ -119,6 +140,17 @@ export interface GlobOptions {
+    */
+   ignore?: string | string[] | IgnoreLike
+ 
++  /**
++   * Load ignore rules from a `.gitignore` file.
++   *
++   * If set to `true`, the nearest `.gitignore` file is found by walking up
++   * from the `cwd`. If set to a string, then it is treated as the path to the
++   * `.gitignore` file to load.
++   *
++   * These rules are combined with any explicit {@link ignore} rules.
++   */
++  gitignore?: boolean | string
++
+   /**
+    * Treat brace expansion like `{a,b}` as a "magic" pattern. Has no
+    * effect if {@link nobrace} is set.
+@@ -390,6 +422,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+   dotRelative: boolean
+   follow: boolean
+   ignore?: string | string[] | IgnoreLike
++  gitignore?: boolean | string
+   magicalBraces: boolean
+   mark?: boolean
+   matchBase: boolean
+@@ -461,7 +494,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     this.maxDepth =
+       typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity
+     this.stat = !!opts.stat
+-    this.ignore = opts.ignore
++    this.gitignore = opts.gitignore
+ 
+     if (this.withFileTypes && this.absolute !== undefined) {
+       throw new Error('cannot set absolute and withFileTypes:true')
+@@ -488,7 +521,6 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     this.pattern = p
+ 
+     this.platform = opts.platform || defaultPlatform
+-    this.opts = { ...opts, platform: this.platform }
+     if (opts.scurry) {
+       this.scurry = opts.scurry
+       if (
+@@ -509,6 +541,20 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+       })
+     }
+     this.nocase = this.scurry.nocase
++    this.ignore =
++      opts instanceof Glob ? opts.ignore
++      : mergeIgnores(opts.ignore, loadGitignore(this.gitignore, this.cwd), {
++          platform: this.platform,
++          nocase: this.nocase,
++          nobrace: this.nobrace,
++          noext: this.noext,
++          noglobstar: this.noglobstar,
++        })
++    this.opts = {
++      ...opts,
++      platform: this.platform,
++      ignore: this.ignore,
++    } as Opts
+ 
+     // If you do nocase:true on a case-sensitive file system, then
+     // we need to use regexps instead of strings for non-magic
+diff --git a/src/ignore.ts b/src/ignore.ts
+index 9fad545..14cd8a6 100644
+--- a/src/ignore.ts
++++ b/src/ignore.ts
+@@ -1,133 +1,185 @@
+-// give it a pattern, and it'll be able to tell you if
+-// a given path should be ignored.
+-// Ignoring a path ignores its children if the pattern ends in /**
+-// Ignores are always parsed in dot:true mode
+-
+-import type { MinimatchOptions } from 'minimatch'
+-import { Minimatch } from 'minimatch'
+-import type { Path } from 'path-scurry'
+-import { Pattern } from './pattern.js'
+-import type { GlobWalkerOpts } from './walker.js'
+-
+-export interface IgnoreLike {
+-  ignored?: (p: Path) => boolean
+-  childrenIgnored?: (p: Path) => boolean
+-  add?: (ignore: string) => void
+-}
+-
+-const defaultPlatform: NodeJS.Platform =
+-  (
+-    typeof process === 'object' &&
+-    process &&
+-    typeof process.platform === 'string'
+-  ) ?
+-    process.platform
+-  : 'linux'
+-
+-/**
+- * Class used to process ignored patterns
+- */
+-export class Ignore implements IgnoreLike {
+-  relative: Minimatch[]
+-  relativeChildren: Minimatch[]
+-  absolute: Minimatch[]
+-  absoluteChildren: Minimatch[]
+-  platform: NodeJS.Platform
+-  mmopts: MinimatchOptions
+-
+-  constructor(
+-    ignored: string[],
+-    {
+-      nobrace,
+-      nocase,
+-      noext,
+-      noglobstar,
+-      platform = defaultPlatform,
+-    }: GlobWalkerOpts,
+-  ) {
+-    this.relative = []
+-    this.absolute = []
+-    this.relativeChildren = []
+-    this.absoluteChildren = []
+-    this.platform = platform
+-    this.mmopts = {
+-      dot: true,
+-      nobrace,
+-      nocase,
+-      noext,
+-      noglobstar,
+-      optimizationLevel: 2,
+-      platform,
+-      nocomment: true,
+-      nonegate: true,
+-    }
+-    for (const ign of ignored) this.add(ign)
+-  }
+-
+-  add(ign: string) {
+-    // this is a little weird, but it gives us a clean set of optimized
+-    // minimatch matchers, without getting tripped up if one of them
+-    // ends in /** inside a brace section, and it's only inefficient at
+-    // the start of the walk, not along it.
+-    // It'd be nice if the Pattern class just had a .test() method, but
+-    // handling globstars is a bit of a pita, and that code already lives
+-    // in minimatch anyway.
+-    // Another way would be if maybe Minimatch could take its set/globParts
+-    // as an option, and then we could at least just use Pattern to test
+-    // for absolute-ness.
+-    // Yet another way, Minimatch could take an array of glob strings, and
+-    // a cwd option, and do the right thing.
+-    const mm = new Minimatch(ign, this.mmopts)
+-    for (let i = 0; i < mm.set.length; i++) {
+-      const parsed = mm.set[i]
+-      const globParts = mm.globParts[i]
+-      /* c8 ignore start */
+-      if (!parsed || !globParts) {
+-        throw new Error('invalid pattern object')
+-      }
+-      // strip off leading ./ portions
+-      // https://github.com/isaacs/node-glob/issues/570
+-      while (parsed[0] === '.' && globParts[0] === '.') {
+-        parsed.shift()
+-        globParts.shift()
+-      }
+-      /* c8 ignore stop */
+-      const p = new Pattern(parsed, globParts, 0, this.platform)
+-      const m = new Minimatch(p.globString(), this.mmopts)
+-      const children = globParts[globParts.length - 1] === '**'
+-      const absolute = p.isAbsolute()
+-      if (absolute) this.absolute.push(m)
+-      else this.relative.push(m)
+-      if (children) {
+-        if (absolute) this.absoluteChildren.push(m)
+-        else this.relativeChildren.push(m)
+-      }
+-    }
+-  }
+-
+-  ignored(p: Path): boolean {
+-    const fullpath = p.fullpath()
+-    const fullpaths = `${fullpath}/`
+-    const relative = p.relative() || '.'
+-    const relatives = `${relative}/`
+-    for (const m of this.relative) {
+-      if (m.match(relative) || m.match(relatives)) return true
+-    }
+-    for (const m of this.absolute) {
+-      if (m.match(fullpath) || m.match(fullpaths)) return true
+-    }
+-    return false
+-  }
+-
+-  childrenIgnored(p: Path): boolean {
+-    const fullpath = `${p.fullpath()}/`
+-    const relative = `${p.relative() || '.'}/`
+-    for (const m of this.relativeChildren) {
+-      if (m.match(relative)) return true
+-    }
+-    for (const m of this.absoluteChildren) {
+-      if (m.match(fullpath)) return true
+-    }
+-    return false
+-  }
+-}
++// give it a pattern, and it'll be able to tell you if
++// a given path should be ignored.
++// Ignoring a path ignores its children if the pattern ends in /**
++// Ignores are always parsed in dot:true mode
++
++import { existsSync, readFileSync } from 'node:fs'
++import { dirname, resolve } from 'node:path'
++import type { MinimatchOptions } from 'minimatch'
++import { escape, Minimatch } from 'minimatch'
++import type { Path } from 'path-scurry'
++import { Pattern } from './pattern.js'
++import type { GlobWalkerOpts } from './walker.js'
++
++export interface IgnoreLike {
++  ignored?: (p: Path) => boolean
++  childrenIgnored?: (p: Path) => boolean
++  add?: (ignore: string) => void
++}
++
++const defaultPlatform: NodeJS.Platform =
++  (
++    typeof process === 'object' &&
++    process &&
++    typeof process.platform === 'string'
++  ) ?
++    process.platform
++  : 'linux'
++
++const defaultCwd = () =>
++  (
++    typeof process === 'object' &&
++    process &&
++    typeof process.cwd === 'function'
++  ) ?
++    process.cwd()
++  : '.'
++
++const normalizePath = (path: string) => path.replace(/\\/g, '/')
++
++const findGitignore = (cwd: string): string | undefined => {
++  let dir = resolve(cwd)
++  while (true) {
++    const file = resolve(dir, '.gitignore')
++    if (existsSync(file)) return file
++    const parent = dirname(dir)
++    if (parent === dir) return undefined
++    dir = parent
++  }
++}
++
++const gitignoreLineToGlob = (
++  line: string,
++  root: string,
++): string[] => {
++  let pattern = line.trim()
++  if (!pattern) return []
++  if (pattern.startsWith('\\#') || pattern.startsWith('\\!')) {
++    pattern = pattern.slice(1)
++  } else if (pattern.startsWith('#') || pattern.startsWith('!')) {
++    return []
++  }
++
++  const directory = pattern.endsWith('/')
++  if (directory) pattern = pattern.replace(/\/+$/, '')
++  if (!pattern) return []
++
++  const rooted = pattern.startsWith('/')
++  if (rooted) pattern = pattern.replace(/^\/+/, '')
++  if (!pattern) return []
++
++  if (!rooted && !pattern.includes('/')) pattern = `**/${pattern}`
++
++  const prefix = escape(normalizePath(resolve(root))).replace(/\/+$/, '')
++  const full = `${prefix || '/'}/${pattern}`
++  return [directory ? `${full}/**` : full]
++}
++
++export const loadGitignore = (
++  gitignore: boolean | string | undefined,
++  cwd: string,
++): string[] => {
++  if (!gitignore) return []
++  const base = cwd || defaultCwd()
++  const file =
++    typeof gitignore === 'string' ? resolve(base, gitignore)
++    : findGitignore(base)
++  if (!file) return []
++  return readFileSync(file, 'utf8')
++    .split(/\r?\n/)
++    .flatMap(line => gitignoreLineToGlob(line, dirname(file)))
++}
++
++/**
++ * Class used to process ignored patterns
++ */
++export class Ignore implements IgnoreLike {
++  relative: Minimatch[]
++  relativeChildren: Minimatch[]
++  absolute: Minimatch[]
++  absoluteChildren: Minimatch[]
++  platform: NodeJS.Platform
++  mmopts: MinimatchOptions
++
++  constructor(
++    ignored: string[],
++    {
++      nobrace,
++      nocase,
++      noext,
++      noglobstar,
++      platform = defaultPlatform,
++    }: GlobWalkerOpts,
++  ) {
++    this.relative = []
++    this.absolute = []
++    this.relativeChildren = []
++    this.absoluteChildren = []
++    this.platform = platform
++    this.mmopts = {
++      dot: true,
++      nobrace,
++      nocase,
++      noext,
++      noglobstar,
++      optimizationLevel: 2,
++      platform,
++      nocomment: true,
++      nonegate: true,
++    }
++    for (const ign of ignored) this.add(ign)
++  }
++
++  add(ign: string) {
++    const mm = new Minimatch(ign, this.mmopts)
++    for (let i = 0; i < mm.set.length; i++) {
++      const parsed = mm.set[i]
++      const globParts = mm.globParts[i]
++      /* c8 ignore start */
++      if (!parsed || !globParts) {
++        throw new Error('invalid pattern object')
++      }
++      while (parsed[0] === '.' && globParts[0] === '.') {
++        parsed.shift()
++        globParts.shift()
++      }
++      /* c8 ignore stop */
++      const p = new Pattern(parsed, globParts, 0, this.platform)
++      const m = new Minimatch(p.globString(), this.mmopts)
++      const children = globParts[globParts.length - 1] === '**'
++      const absolute = p.isAbsolute()
++      if (absolute) this.absolute.push(m)
++      else this.relative.push(m)
++      if (children) {
++        if (absolute) this.absoluteChildren.push(m)
++        else this.relativeChildren.push(m)
++      }
++    }
++  }
++
++  ignored(p: Path): boolean {
++    const fullpath = p.fullpath()
++    const fullpaths = `${fullpath}/`
++    const relative = p.relative() || '.'
++    const relatives = `${relative}/`
++    for (const m of this.relative) {
++      if (m.match(relative) || m.match(relatives)) return true
++    }
++    for (const m of this.absolute) {
++      if (m.match(fullpath) || m.match(fullpaths)) return true
++    }
++    return false
++  }
++
++  childrenIgnored(p: Path): boolean {
++    const fullpath = `${p.fullpath()}/`
++    const relative = `${p.relative() || '.'}/`
++    for (const m of this.relativeChildren) {
++      if (m.match(relative)) return true
++    }
++    for (const m of this.absoluteChildren) {
++      if (m.match(fullpath)) return true
++    }
++    return false
++  }
++}
+diff --git a/test/gitignore.ts b/test/gitignore.ts
+new file mode 100644
+index 0000000..e34123d
+--- /dev/null
++++ b/test/gitignore.ts
+@@ -0,0 +1,75 @@
++import { resolve } from 'path'
++import type { Test } from 'tap'
++import t from 'tap'
++import type { GlobOptionsWithFileTypesUnset } from '../src/index.js'
++import { glob, globSync } from '../src/index.js'
++
++const alphasort = (a: string, b: string) => a.localeCompare(b, 'en')
++const sort = (paths: string[]) => paths.sort(alphasort)
++
++const check = async (
++  t: Test,
++  pattern: string,
++  options: GlobOptionsWithFileTypesUnset,
++  expect: string[],
++) => {
++  const expected = sort([...expect])
++  t.strictSame(sort(await glob(pattern, options)), expected, 'async')
++  t.strictSame(sort(globSync(pattern, options)), expected, 'sync')
++}
++
++t.test('gitignore:true loads the nearest .gitignore', async t => {
++  const cwd = t.testdir({
++    'proj[1]': {
++      '.gitignore': 'ignored-dir/\n*.log\n',
++      nested: {
++        'debug.log': '',
++        'keep.ts': '',
++        'ignored-dir': {
++          'skip.ts': '',
++        },
++      },
++    },
++  })
++
++  await check(
++    t,
++    '**/*',
++    {
++      cwd: resolve(cwd, 'proj[1]/nested'),
++      gitignore: true,
++      nodir: true,
++      posix: true,
++    },
++    ['keep.ts'],
++  )
++})
++
++t.test('gitignore path merges with ignore', async t => {
++  const cwd = t.testdir({
++    'proj[1]': {
++      '.gitignore': 'vendor/\n*.tmp\n',
++      src: {
++        'drop.js': '',
++        'keep.js': '',
++        'skip.tmp': '',
++        vendor: {
++          'vendored.js': '',
++        },
++      },
++    },
++  })
++
++  await check(
++    t,
++    '**/*',
++    {
++      cwd: resolve(cwd, 'proj[1]/src'),
++      gitignore: '../.gitignore',
++      ignore: 'drop.js',
++      nodir: true,
++      posix: true,
++    },
++    ['keep.js'],
++  )
++})

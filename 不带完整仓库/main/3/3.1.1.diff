@@ -1,0 +1,355 @@
+﻿diff --git a/docs/windows-pattern-analysis.md b/docs/windows-pattern-analysis.md
+new file mode 100644
+index 0000000..496c193
+--- /dev/null
++++ b/docs/windows-pattern-analysis.md
+@@ -0,0 +1,348 @@
++# Windows 路径模式分析
++
++本文分析 [`src/pattern.ts`](file:///app/src/pattern.ts) 中 `Pattern` 类对 Windows 路径的处理，重点聚焦 [`isUNC()`](file:///app/src/pattern.ts#L178-L191)、[`isDrive()`](file:///app/src/pattern.ts#L201-L211)、[`isAbsolute()`](file:///app/src/pattern.ts#L219-L227) 和 [`root()`](file:///app/src/pattern.ts#L232-L239) 的实现，以及构造函数对路径片段的规范化过程。
++
++## 1. UNC 路径与本地驱动器路径的区分算法
++
++### 1.1 `isUNC()`
++
++[`isUNC()`](file:///app/src/pattern.ts#L178-L191) 只在 Windows 平台上把模式识别为 UNC 路径，并且要求判断发生在顶层 `Pattern` 视图上，也就是 `#index === 0`。
++
++判定条件如下：
++
++```ts
++this.#platform === 'win32' &&
++this.#index === 0 &&
++pl[0] === '' &&
++pl[1] === '' &&
++typeof pl[2] === 'string' && !!pl[2] &&
++typeof pl[3] === 'string' && !!pl[3]
++```
++
++这组条件的含义是：
++
++- 输入按 `/` 切分后，前两个片段必须是空串，表示原始字符串以 `//` 开头。
++- 第三个片段必须是非空的服务器名。
++- 第四个片段必须是非空的共享名。
++
++所以只有形如 `//server/share/...` 的模式才会被识别为 UNC。仅有 `//`、`//server`、`//server/` 都不会被当作 UNC。
++
++### 1.2 `isDrive()`
++
++[`isDrive()`](file:///app/src/pattern.ts#L201-L211) 负责识别 Windows 驱动器路径。判定条件如下：
++
++```ts
++this.#platform === 'win32' &&
++this.#index === 0 &&
++this.length > 1 &&
++typeof pl[0] === 'string' &&
++/^[a-z]:$/i.test(pl[0])
++```
++
++这表示：
++
++- 只在 Windows 平台上识别。
++- 只检查起始位置。
++- 首片段必须长得像 `C:`、`d:`。
++- 必须还有后续片段，因此裸的 `C:` 不会被识别为 drive rooted 模式。
++
++### 1.3 `isAbsolute()`
++
++[`isAbsolute()`](file:///app/src/pattern.ts#L219-L227) 把三类模式统一归为“绝对路径”：
++
++```ts
++(pl[0] === '' && pl.length > 1) ||
++this.isDrive() ||
++this.isUNC()
++```
++
++也就是说，下列模式都会被视为 absolute：
++
++- `/foo/bar`
++- `C:/foo/bar`
++- `//server/share/foo`
++
++这里有一个重要设计点：在 Windows 上，drive 路径和 UNC 路径都被纳入 absolute 范畴，后续逻辑无需分别关心“是否绝对”，只在需要时再区分“是哪一种绝对”。
++
++## 2. 构造函数如何规范化输入并保留卷信息
++
++构造函数位于 [`Pattern` 构造函数](file:///app/src/pattern.ts#L42-L105)。它接收两组并行数组：
++
++- `patternList`：已经解析后的模式片段，元素可能是字符串、`RegExp` 或 `GLOBSTAR`
++- `globList`：原始 glob 片段字符串
++
++虽然问题里提到“`patternParts` 数组”，但在当前实现里实际对应的是内部的 `#patternList` 与 `#globList`。
++
++### 2.1 规范化只在初始视图执行
++
++构造函数只在 `#index === 0` 时执行根路径规范化：
++
++- UNC 路径走 `isUNC()` 分支
++- drive 路径和 `/` 开头的绝对路径走 `isDrive() || isAbsolute()` 分支
++
++这样做的作用是：
++
++- 只在顶层把根信息折叠进第一个元素
++- 后续 `rest()` 产生的子视图共享同一组数组，不重复改写结构
++
++### 2.2 UNC 路径的规范化
++
++当 `isUNC()` 为真时，构造函数会执行 [`pattern.ts:L76-L89`](file:///app/src/pattern.ts#L76-L89)：
++
++```ts
++const [p0, p1, p2, p3, ...prest] = this.#patternList
++const [g0, g1, g2, g3, ...grest] = this.#globList
++if (prest[0] === '') {
++  prest.shift()
++  grest.shift()
++}
++const p = [p0, p1, p2, p3, ''].join('/')
++const g = [g0, g1, g2, g3, ''].join('/')
++this.#patternList = [p, ...prest]
++this.#globList = [g, ...grest]
++```
++
++例如：
++
++- `['', '', 'server', 'share']` 规范化为 `['//server/share/']`
++- `['', '', 'server', 'share', 'foo']` 规范化为 `['//server/share/', 'foo']`
++
++这里把 `server` 和 `share` 合成了一个完整的卷根字符串 `//server/share/`。这样后续逻辑可以把它当作一个单独的根元素处理，而不是分散在多个数组槽位里。
++
++### 2.3 Drive 与 `/` 开头绝对路径的规范化
++
++当 `isDrive()` 或 `isAbsolute()` 为真时，构造函数会执行 [`pattern.ts:L90-L103`](file:///app/src/pattern.ts#L90-L103)：
++
++```ts
++const [p1, ...prest] = this.#patternList
++const [g1, ...grest] = this.#globList
++if (prest[0] === '') {
++  prest.shift()
++  grest.shift()
++}
++const p = `${p1 as string}/`
++const g = `${g1}/`
++this.#patternList = [p, ...prest]
++this.#globList = [g, ...grest]
++```
++
++例子：
++
++- `['C:', 'foo', 'bar']` 变成 `['C:/', 'foo', 'bar']`
++- `['', 'etc']` 变成 `['/', 'etc']`
++- `['']` 不会进入这条路径，因为它不满足 `pl.length > 1`
++
++### 2.4 为什么说“保留了卷信息”
++
++规范化的核心不是单纯加一个斜杠，而是把“根”压缩成首元素：
++
++- UNC 根变成 `//server/share/`
++- Drive 根变成 `C:/`
++- POSIX 根变成 `/`
++
++之后：
++
++- [`root()`](file:///app/src/pattern.ts#L232-L239) 可以直接返回这个首元素
++- [`globString()`](file:///app/src/pattern.ts#L140-L148) 可以用 `#globList[0]` 拼接出正确的字符串表示
++- [`rest()`](file:///app/src/pattern.ts#L160-L173) 可以把绝对性和卷类型缓存传给子视图，但不需要再次拆解根信息
++
++## 3. `root()` 在不同平台上的返回差异与设计意图
++
++[`root()`](file:///app/src/pattern.ts#L232-L239) 的实现很短：
++
++```ts
++const p = this.#patternList[0]
++return (
++  typeof p === 'string' && this.isAbsolute() && this.#index === 0
++) ? p : ''
++```
++
++它只在以下条件同时满足时返回非空值：
++
++- 当前视图处于起始位置 `#index === 0`
++- 模式是 absolute
++- `#patternList[0]` 是字符串
++
++否则返回空串。
++
++### 3.1 Windows 平台上的行为
++
++在 `process.platform === 'win32'` 时：
++
++- `//server/share/foo` 的根可能是 `//server/share/`
++- `C:/foo/bar` 的根可能是 `C:/`
++- `/foo/bar` 的根是 `/`
++
++Windows 下 `root()` 需要表达的不只是“是否绝对”，还要表达“从哪个卷开始遍历”。这是因为 UNC share 和 drive letter 都是文件系统遍历的真正起点。
++
++### 3.2 非 Windows 平台上的行为
++
++在非 `win32` 平台时：
++
++- `C:/foo/bar` 不会被识别为 drive rooted，通常 `root()` 返回 `''`
++- `//server/share/foo` 不会被识别为 UNC；但由于它仍满足 `pl[0] === '' && pl.length > 1`，会被视为普通 `/` 开头绝对路径，因此根更接近 `/`
++- `/foo/bar` 的根仍是 `/`
++
++### 3.3 设计意图
++
++这个设计反映了一个很明确的目标：
++
++- Windows 上要保留 volume 级别的信息，因为 `C:/` 和 `//server/share/` 不是同一个命名空间。
++- 非 Windows 上不引入 Windows 语义，只保留 POSIX 风格的 `/` 根。
++- 子视图不重复暴露根，所以 `rest()` 之后的 `Pattern.root()` 会返回空串，避免“剩余片段”和“原始根”混在一起。
++
++## 4. 当前实现可能存在的边缘情况
++
++### 4.1 `//` 开头但不满足 UNC 结构
++
++`isUNC()` 要求必须同时有非空 `host` 和 `share`。因此：
++
++- `//`
++- `//server`
++- `//server/`
++
++这些都不是 UNC。
++
++但它们仍然可能被 [`isAbsolute()`](file:///app/src/pattern.ts#L219-L227) 视为 absolute，因为只要 `pl[0] === '' && pl.length > 1` 就成立。这意味着某些 `//` 开头但不完整的路径，在 Windows 上会退化成“普通以 `/` 开头的绝对路径”，而不是 UNC。
++
++### 4.2 `//server/**/*.js` 的 UNC 判定失败
++
++这是当前实现里最值得注意的点之一。
++
++`isUNC()` 要求：
++
++- `pl[2]` 是字符串且非空
++- `pl[3]` 也是字符串且非空
++
++如果输入是 `//server/**/*.js`，上游分段后第三段很可能是 `**`，而在 `patternList` 里它会被解析成 `GLOBSTAR`，不再是字符串。于是：
++
++- `pl[2] === 'server'`
++- `pl[3] === GLOBSTAR`
++
++这样 `isUNC()` 返回 `false`。这说明当前实现只接受“静态 share 名”，不接受 share 位置出现动态模式。于是该模式会退化为普通 absolute 路径处理，而不是 UNC 路径。
++
++### 4.3 裸盘符 `C:`
++
++`isDrive()` 要求 `this.length > 1`，所以仅有 `C:` 时不会被识别为 drive rooted 模式。这和 Windows 自身对 `C:` 的语义并不冲突，因为 `C:` 通常表示“C 盘当前工作目录”，不是绝对根路径。但这意味着 `Pattern` 明确只把 `C:/...` 这类路径当作绝对盘符路径。
++
++### 4.4 `root()` 只在顶层有效
++
++`rest()` 会复制 `#isAbsolute`、`#isUNC`、`#isDrive` 的缓存值，见 [`pattern.ts:L169-L171`](file:///app/src/pattern.ts#L169-L171)，但子视图的 `#index` 已经不是 0，所以 [`root()`](file:///app/src/pattern.ts#L232-L239) 会返回空串。
++
++这意味着：
++
++- 子视图知道自己源自绝对路径
++- 但不会再次把根当成当前片段的一部分暴露出来
++
++这是一种有意的分层：根只属于顶层视图。
++
++## 5. 两个具体示例的内部转化过程
++
++### 5.1 示例一：`'//server/**/*.js'`
++
++下面用“逻辑上的输入分片”和 `Pattern` 内部数组来说明这个模式在 Windows 下的处理。
++
++#### 第一步：初始分片
++
++假设上游先按 `/` 切开，并把 glob 语义解析进 `patternList`：
++
++- `globList` 近似为：`['', '', 'server', '**', '*.js']`
++- `patternList` 近似为：`['', '', 'server', GLOBSTAR, /.../]`
++
++这里 `*.js` 在 `patternList` 中通常已经不是原始字符串，而是一个 `RegExp`。
++
++#### 第二步：UNC 判定
++
++调用 [`isUNC()`](file:///app/src/pattern.ts#L178-L191) 时：
++
++- `pl[0] === ''` 成立
++- `pl[1] === ''` 成立
++- `pl[2] === 'server'` 成立
++- `pl[3]` 是 `GLOBSTAR`，不是字符串
++
++因此 `isUNC()` 返回 `false`。
++
++#### 第三步：absolute 判定
++
++由于 `pl[0] === '' && pl.length > 1` 成立，[`isAbsolute()`](file:///app/src/pattern.ts#L219-L227) 返回 `true`。
++
++#### 第四步：构造函数规范化
++
++于是构造函数进入“drive 或 absolute”分支，而不是 UNC 分支：
++
++- 取出 `p1 = ''`
++- 生成根 `p = '/'`
++- 剩余片段保留为 `['server', GLOBSTAR, /.../]`
++
++规范化后大致变成：
++
++- `#patternList = ['/', 'server', GLOBSTAR, /.../]`
++- `#globList = ['/', 'server', '**', '*.js']`
++
++#### 第五步：`root()` 结果
++
++此时 [`root()`](file:///app/src/pattern.ts#L232-L239) 返回 `/`，而不是 `//server/...`。
++
++#### 结论
++
++`'//server/**/*.js'` 不会被当作 UNC 根路径，而会退化成普通 absolute 模式。这是当前实现的一个明确边界：UNC 识别要求 `share` 必须是静态字符串。
++
++### 5.2 示例二：`'C:/foo/bar/**'`
++
++#### 第一步：初始分片
++
++上游分片后可近似理解为：
++
++- `globList = ['C:', 'foo', 'bar', '**']`
++- `patternList = ['C:', 'foo', 'bar', GLOBSTAR]`
++
++#### 第二步：Drive 判定
++
++调用 [`isDrive()`](file:///app/src/pattern.ts#L201-L211) 时：
++
++- 平台是 `win32`
++- `#index === 0`
++- `length > 1`
++- `pl[0] === 'C:'` 匹配 `/^[a-z]:$/i`
++
++因此 `isDrive()` 返回 `true`。
++
++#### 第三步：构造函数规范化
++
++构造函数进入 drive/absolute 分支：
++
++- `p1 = 'C:'`
++- `prest = ['foo', 'bar', GLOBSTAR]`
++- 生成根 `p = 'C:/'`
++
++规范化后：
++
++- `#patternList = ['C:/', 'foo', 'bar', GLOBSTAR]`
++- `#globList = ['C:/', 'foo', 'bar', '**']`
++
++#### 第四步：`root()` 结果
++
++此时 [`root()`](file:///app/src/pattern.ts#L232-L239) 返回 `C:/`。
++
++#### 第五步：`rest()` 后的视图
++
++第一次调用 [`rest()`](file:///app/src/pattern.ts#L160-L173) 后：
++
++- `#index` 变成 1
++- 当前 `pattern()` 是 `'foo'`
++- `#isDrive`、`#isAbsolute` 会从父对象继承
++- 但 `root()` 返回空串，因为已经不是顶层视图
++
++#### 结论
++
++`'C:/foo/bar/**'` 会被稳定地规范化为“根元素 + 剩余路径片段”的结构，其中 `C:/` 被完整保留为卷根。
++
++## 6. 总结
++
++这段实现的核心思路可以概括为三点：
++
++- 先用 `isUNC()`、`isDrive()`、`isAbsolute()` 在顶层确定模式属于哪一类根路径。
++- 再在构造函数中把根折叠进 `#patternList[0]`，把 UNC share、盘符或 `/` 统一变成单个字符串根。
++- `root()` 只在顶层返回这个根，子视图通过缓存继承“绝对性”，但不重复暴露卷信息。
++
++因此，`Pattern` 并不是把路径简单切成若干段，而是在初始构造阶段把“卷”这个概念收束为一个稳定的首元素。这样既能保留 Windows 特有的 drive / UNC 语义，又能让后续遍历逻辑把剩余部分统一当作普通路径片段处理。
+\ No newline at end of file

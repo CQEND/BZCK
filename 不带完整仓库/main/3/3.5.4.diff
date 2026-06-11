@@ -1,0 +1,293 @@
+﻿diff --git a/src/walker.ts b/src/walker.ts
+index 7d49716..f57144d 100644
+--- a/src/walker.ts
++++ b/src/walker.ts
+@@ -90,7 +90,6 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   opts: O
+   seen: Set<Path> = new Set<Path>()
+   paused: boolean = false
+-  aborted: boolean = false
+   #onResume: (() => unknown)[] = []
+   #ignore?: IgnoreLike
+   #sep: '\\' | '/'
+@@ -140,9 +139,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     this.paused = true
+   }
+   resume() {
+-    /* c8 ignore start */
+     if (this.signal?.aborted) return
+-    /* c8 ignore stop */
+     this.paused = false
+     let fn: (() => unknown) | undefined = undefined
+     while (!this.paused && (fn = this.#onResume.shift())) {
+@@ -151,11 +148,9 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   }
+   onResume(fn: () => unknown) {
+     if (this.signal?.aborted) return
+-    /* c8 ignore start */
+     if (!this.paused) {
+       fn()
+     } else {
+-      /* c8 ignore stop */
+       this.#onResume.push(fn)
+     }
+   }
+@@ -267,117 +262,93 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     if (p) this.matchFinish(p, absolute)
+   }
+ 
+-  walkCB(target: Path, patterns: Pattern[], cb: () => unknown) {
+-    /* c8 ignore start */
+-    if (this.signal?.aborted) cb()
+-    /* c8 ignore stop */
+-    this.walkCB2(target, patterns, new Processor(this.opts), cb)
++  async walkTarget(target: Path, patterns: Pattern[]): Promise<void> {
++    if (this.signal?.aborted) return
++    await this.#walk2(target, patterns, new Processor(this.opts))
+   }
+ 
+-  walkCB2(
++  async #walk2(
+     target: Path,
+     patterns: Pattern[],
+     processor: Processor,
+-    cb: () => unknown,
+-  ) {
+-    if (this.#childrenIgnored(target)) return cb()
+-    if (this.signal?.aborted) cb()
++  ): Promise<void> {
++    if (this.#childrenIgnored(target)) return
++    if (this.signal?.aborted) return
+     if (this.paused) {
+-      this.onResume(() => this.walkCB2(target, patterns, processor, cb))
++      await new Promise<void>(res =>
++        this.onResume(() =>
++          this.#walk2(target, patterns, processor).then(
++            () => res(),
++            () => res(),
++          ),
++        ),
++      )
+       return
+     }
+     processor.processPatterns(target, patterns)
+ 
+-    // done processing.  all of the above is sync, can be abstracted out.
+-    // subwalks is a map of paths to the entry filters they need
+-    // matches is a map of paths to [absolute, ifDir] tuples.
+-    let tasks = 1
+-    const next = () => {
+-      if (--tasks === 0) cb()
+-    }
+-
++    const tasks: Promise<void>[] = []
+     for (const [m, absolute, ifDir] of processor.matches.entries()) {
+       if (this.#ignored(m)) continue
+-      tasks++
+-      void this.match(m, absolute, ifDir).then(() => next())
++      tasks.push(this.match(m, absolute, ifDir))
+     }
+ 
+     for (const t of processor.subwalkTargets()) {
+       if (this.maxDepth !== Infinity && t.depth() >= this.maxDepth) {
+         continue
+       }
+-      tasks++
+-      const childrenCached = t.readdirCached()
+-      if (t.calledReaddir())
+-        this.walkCB3(t, childrenCached, processor, next)
+-      else {
+-        t.readdirCB(
+-          (_, entries) => this.walkCB3(t, entries, processor, next),
+-          true,
+-        )
+-      }
++      tasks.push(
++        (async () => {
++          const entries: Path[] = t.calledReaddir()
++            ? (t.readdirCached() as Path[])
++            : ((await t.readdir()) as Path[])
++          await this.#walk3(t, entries, processor)
++        })(),
++      )
+     }
+ 
+-    next()
++    await Promise.all(tasks)
+   }
+ 
+-  walkCB3(
++  async #walk3(
+     target: Path,
+     entries: Path[],
+     processorx: Processor,
+-    cb: () => unknown,
+-  ) {
++  ): Promise<void> {
+     const proc = processorx.filterEntries(target, entries)
+ 
+-    let tasks = 1
+-    const next = () => {
+-      if (--tasks === 0) cb()
+-    }
+-
++    const tasks: Promise<void>[] = []
+     for (const [m, absolute, ifDir] of proc.matches.entries()) {
+       if (this.#ignored(m)) continue
+-      tasks++
+-      void this.match(m, absolute, ifDir).then(() => next())
++      tasks.push(this.match(m, absolute, ifDir))
+     }
+     for (const [target, patterns] of proc.subwalks.entries()) {
+-      tasks++
+-      this.walkCB2(target, patterns, proc.child(), next)
++      tasks.push(this.#walk2(target, patterns, proc.child()))
+     }
+ 
+-    next()
++    await Promise.all(tasks)
+   }
+ 
+-  walkCBSync(target: Path, patterns: Pattern[], cb: () => unknown) {
+-    /* c8 ignore start */
+-    if (this.signal?.aborted) cb()
+-    /* c8 ignore stop */
+-    this.walkCB2Sync(target, patterns, new Processor(this.opts), cb)
++  walkTargetSync(target: Path, patterns: Pattern[]): void {
++    if (this.signal?.aborted) return
++    this.#walk2Sync(target, patterns, new Processor(this.opts))
+   }
+ 
+-  walkCB2Sync(
++  #walk2Sync(
+     target: Path,
+     patterns: Pattern[],
+     processor: Processor,
+-    cb: () => unknown,
+-  ) {
+-    if (this.#childrenIgnored(target)) return cb()
+-    if (this.signal?.aborted) cb()
++  ): void {
++    if (this.#childrenIgnored(target)) return
++    if (this.signal?.aborted) return
+     if (this.paused) {
+       this.onResume(() =>
+-        this.walkCB2Sync(target, patterns, processor, cb),
++        this.#walk2Sync(target, patterns, processor),
+       )
+       return
+     }
+     processor.processPatterns(target, patterns)
+ 
+-    // done processing.  all of the above is sync, can be abstracted out.
+-    // subwalks is a map of paths to the entry filters they need
+-    // matches is a map of paths to [absolute, ifDir] tuples.
+-    let tasks = 1
+-    const next = () => {
+-      if (--tasks === 0) cb()
+-    }
+-
+     for (const [m, absolute, ifDir] of processor.matches.entries()) {
+       if (this.#ignored(m)) continue
+       this.matchSync(m, absolute, ifDir)
+@@ -387,37 +358,25 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+       if (this.maxDepth !== Infinity && t.depth() >= this.maxDepth) {
+         continue
+       }
+-      tasks++
+       const children = t.readdirSync()
+-      this.walkCB3Sync(t, children, processor, next)
++      this.#walk3Sync(t, children, processor)
+     }
+-
+-    next()
+   }
+ 
+-  walkCB3Sync(
++  #walk3Sync(
+     target: Path,
+     entries: Path[],
+     processor: Processor,
+-    cb: () => unknown,
+-  ) {
++  ): void {
+     const proc = processor.filterEntries(target, entries)
+ 
+-    let tasks = 1
+-    const next = () => {
+-      if (--tasks === 0) cb()
+-    }
+-
+     for (const [m, absolute, ifDir] of proc.matches.entries()) {
+       if (this.#ignored(m)) continue
+       this.matchSync(m, absolute, ifDir)
+     }
+     for (const [target, patterns] of proc.subwalks.entries()) {
+-      tasks++
+-      this.walkCB2Sync(target, patterns, proc.child(), next)
++      this.#walk2Sync(target, patterns, proc.child())
+     }
+-
+-    next()
+   }
+ }
+ 
+@@ -439,15 +398,8 @@ export class GlobWalker<
+     if (this.path.isUnknown()) {
+       await this.path.lstat()
+     }
+-    await new Promise((res, rej) => {
+-      this.walkCB(this.path, this.patterns, () => {
+-        if (this.signal?.aborted) {
+-          rej(this.signal.reason)
+-        } else {
+-          res(this.matches)
+-        }
+-      })
+-    })
++    await this.walkTarget(this.path, this.patterns)
++    if (this.signal?.aborted) throw this.signal.reason
+     return this.matches
+   }
+ 
+@@ -456,10 +408,7 @@ export class GlobWalker<
+     if (this.path.isUnknown()) {
+       this.path.lstatSync()
+     }
+-    // nothing for the callback to do, because this never pauses
+-    this.walkCBSync(this.path, this.patterns, () => {
+-      if (this.signal?.aborted) throw this.signal.reason
+-    })
++    this.walkTargetSync(this.path, this.patterns)
+     return this.matches
+   }
+ }
+@@ -486,13 +435,12 @@ export class GlobStream<
+ 
+   stream(): MatchStream<O> {
+     const target = this.path
+-    if (target.isUnknown()) {
+-      void target.lstat().then(() => {
+-        this.walkCB(target, this.patterns, () => this.results.end())
+-      })
+-    } else {
+-      this.walkCB(target, this.patterns, () => this.results.end())
++    const doWalk = async () => {
++      if (target.isUnknown()) await target.lstat()
++      await this.walkTarget(target, this.patterns)
++      this.results.end()
+     }
++    void doWalk()
+     return this.results
+   }
+ 
+@@ -500,7 +448,8 @@ export class GlobStream<
+     if (this.path.isUnknown()) {
+       this.path.lstatSync()
+     }
+-    this.walkCBSync(this.path, this.patterns, () => this.results.end())
++    this.walkTargetSync(this.path, this.patterns)
++    this.results.end()
+     return this.results
+   }
+ }

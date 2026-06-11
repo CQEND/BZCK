@@ -1,0 +1,150 @@
+﻿diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..d693543 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -11,6 +11,7 @@ import {
+ } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
+ import { Pattern } from './pattern.js'
++import { resolve } from 'path'
+ import { GlobStream, GlobWalker } from './walker.js'
+ 
+ export type MatchSet = Minimatch['set']
+@@ -562,7 +563,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     // coerce them into the right shape.  It will have already called
+     // realpath() if the option was set to do so, so we know that's cached.
+     // start out knowing the cwd, at least
+-    return [
++    const results = [
+       ...(await new GlobWalker(this.patterns, this.scurry.cwd, {
+         ...this.opts,
+         maxDepth:
+@@ -574,6 +575,12 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+         includeChildMatches: this.includeChildMatches,
+       }).walk()),
+     ]
++    if (this.absolute) {
++      return results.map(item =>
++        typeof item === 'string' ? resolve(this.cwd, item) : item
++      )
++    }
++    return results
+   }
+ 
+   /**
+@@ -581,7 +588,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+    */
+   walkSync(): Results<Opts>
+   walkSync(): (string | Path)[] {
+-    return [
++    const results = [
+       ...new GlobWalker(this.patterns, this.scurry.cwd, {
+         ...this.opts,
+         maxDepth:
+@@ -593,6 +600,12 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+         includeChildMatches: this.includeChildMatches,
+       }).walkSync(),
+     ]
++    if (this.absolute) {
++      return results.map(item =>
++        typeof item === 'string' ? resolve(this.cwd, item) : item
++      )
++    }
++    return results
+   }
+ 
+   /**
+@@ -600,7 +613,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+    */
+   stream(): Minipass<Result<Opts>, Result<Opts>>
+   stream(): Minipass<string | Path, string | Path> {
+-    return new GlobStream(this.patterns, this.scurry.cwd, {
++    const stream = new GlobStream(this.patterns, this.scurry.cwd, {
+       ...this.opts,
+       maxDepth:
+         this.maxDepth !== Infinity ?
+@@ -610,6 +623,18 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+       nocase: this.nocase,
+       includeChildMatches: this.includeChildMatches,
+     }).stream()
++    if (this.absolute) {
++      const mapped = new (stream.constructor as any)({
++        objectMode: true,
++      })
++      stream.on('data', (item: string | Path) => {
++        mapped.write(typeof item === 'string' ? resolve(this.cwd, item) : item)
++      })
++      stream.on('end', () => mapped.end())
++      stream.on('error', (er: any) => mapped.emit('error', er))
++      return mapped
++    }
++    return stream
+   }
+ 
+   /**
+@@ -617,7 +642,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+    */
+   streamSync(): Minipass<Result<Opts>, Result<Opts>>
+   streamSync(): Minipass<string | Path, string | Path> {
+-    return new GlobStream(this.patterns, this.scurry.cwd, {
++    const stream = new GlobStream(this.patterns, this.scurry.cwd, {
+       ...this.opts,
+       maxDepth:
+         this.maxDepth !== Infinity ?
+@@ -627,6 +652,18 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+       nocase: this.nocase,
+       includeChildMatches: this.includeChildMatches,
+     }).streamSync()
++    if (this.absolute) {
++      const mapped = new (stream.constructor as any)({
++        objectMode: true,
++      })
++      stream.on('data', (item: string | Path) => {
++        mapped.write(typeof item === 'string' ? resolve(this.cwd, item) : item)
++      })
++      stream.on('end', () => mapped.end())
++      stream.on('error', (er: any) => mapped.emit('error', er))
++      return mapped
++    }
++    return stream
+   }
+ 
+   /**
+diff --git a/test/absolute.ts b/test/absolute.ts
+index 1cc5f8b..bd04cfc 100644
+--- a/test/absolute.ts
++++ b/test/absolute.ts
+@@ -44,5 +44,19 @@ for (const mark of marks) {
+         ok(t, m)
+       }
+     })
++
++    t.test('returns absolute results with stat: true', async t => {
++      var g = new Glob(pattern, { absolute: true, stat: true })
++      const results = await g.walk()
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
+   })
+ }
+diff --git a/test_abs_stat.js b/test_abs_stat.js
+new file mode 100644
+index 0000000..28cb8a7
+--- /dev/null
++++ b/test_abs_stat.js
+@@ -0,0 +1,7 @@
++import { glob } from './dist/esm/index.js'
++
++async function run() {
++  const res = await glob('test/fixtures/a/b/**', { absolute: true, stat: true })
++  console.log(res)
++}
++run()
+\ No newline at end of file

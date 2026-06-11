@@ -1,0 +1,411 @@
+﻿diff --git a/docs/windows-pattern-analysis.md b/docs/windows-pattern-analysis.md
+new file mode 100644
+index 0000000..2bbee2e
+--- /dev/null
++++ b/docs/windows-pattern-analysis.md
+@@ -0,0 +1,404 @@
++# Windows 路径模式分析：`Pattern` 类中 UNC、驱动器与绝对路径的处理
++
++## 概述
++
++本文档分析 `src/pattern.ts` 中 `Pattern` 类的实现，重点关注 Windows 平台下 UNC 路径、驱动器路径和绝对路径的识别与归一化逻辑。`Pattern` 类是对 minimatch 解析结果（`patternList` / `globList` 数组对）的轻量封装，提供偏移量索引视图，并负责在构造时对根路径条目进行规范化。
++
++---
++
++## 1. UNC 路径与本地驱动器路径的区分算法
++
++### 1.1 数据来源
++
++`Pattern` 构造函数的 `patternList: MMPattern[]` 参数来自 minimatch 对输入模式按 `/` 分割后的数组。例如：
++
++| 输入模式 | `patternList` |
++|---|---|
++| `//server/share/x/*` | `['', '', 'server', 'share', 'x', '*']` |
++| `C:/foo/bar` | `['C:', 'foo', 'bar']` |
++| `/etc/file` | `['', 'etc', 'file']` |
++
++### 1.2 `isUNC()` 检测逻辑
++
++```typescript
++isUNC(): boolean {
++    const pl = this.#patternList
++    return this.#isUNC !== undefined ?
++        this.#isUNC
++      : (this.#isUNC =
++          this.#platform === 'win32' &&
++          this.#index === 0 &&
++          pl[0] === '' &&
++          pl[1] === '' &&
++          typeof pl[2] === 'string' &&
++          !!pl[2] &&
++          typeof pl[3] === 'string' &&
++          !!pl[3])
++}
++```
++
++检测条件：
++
++| 条件 | 含义 |
++|---|---|
++| `this.#platform === 'win32'` | 仅在 Windows 平台生效 |
++| `this.#index === 0` | 仅在模式的开头检测 |
++| `pl[0] === '' && pl[1] === ''` | 前两个元素为空字符串，对应 `//` 前缀 |
++| `typeof pl[2] === 'string' && !!pl[2]` | 第三个元素为非空字符串，对应 **主机名（host）** |
++| `typeof pl[3] === 'string' && !!pl[3]` | 第四个元素为非空字符串，对应 **共享名（share）** |
++
++**关键点**：UNC 路径必须同时包含主机名和共享名。`//server`（缺少共享名）或 `//server/`（共享名为空）均不被视为 UNC。
++
++### 1.3 `isDrive()` 检测逻辑
++
++```typescript
++isDrive(): boolean {
++    const pl = this.#patternList
++    return this.#isDrive !== undefined ?
++        this.#isDrive
++      : (this.#isDrive =
++          this.#platform === 'win32' &&
++          this.#index === 0 &&
++          this.length > 1 &&
++          typeof pl[0] === 'string' &&
++          /^[a-z]:$/i.test(pl[0]))
++}
++```
++
++检测条件：
++
++| 条件 | 含义 |
++|---|---|
++| `this.#platform === 'win32'` | 仅在 Windows 平台生效 |
++| `this.#index === 0` | 仅在模式的开头检测 |
++| `this.length > 1` | 模式至少有两个部分（如 `['C:', 'foo']`），排除单独的 `['C:']` |
++| `typeof pl[0] === 'string' && /^[a-z]:$/i.test(pl[0])` | 首元素匹配 `X:` 格式（大小写不敏感） |
++
++**注意事项**：
++
++- 注释中提到，类似 `c:*` 这样的模式理论上可以测试 `c:` 驱动器下的 CWD，但当前实现无法获知该 CWD 是什么（除非实际 `chdir` 进入），因此未做特殊处理。
++- `isDrive()` 要求 `this.length > 1`，这意味着 `['C:']` 单独出现时不被视为驱动器路径。但在实际使用中，minimatch 通常会在末尾添加一个空字符串，从而形成 `['C:', '']`，其 `length` 为 2，满足条件。
++
++### 1.4 三者优先级
++
++在 `isAbsolute()` 中，三者的关系是**或**关系：
++
++```typescript
++isAbsolute(): boolean {
++    return (pl[0] === '' && pl.length > 1) || this.isDrive() || this.isUNC()
++}
++```
++
++因此，识别优先级为：**POSIX 绝对路径（`pl[0] === ''`） ⊂ 驱动器路径 ⊂ UNC 路径**。在 Win32 平台上，UNC 和驱动器路径都属于绝对路径。
++
++---
++
++## 2. 构造函数中的路径归一化：从输入到 `patternParts`
++
++当 `this.#index === 0`（即处理模式的开头）时，构造函数对根条目进行归一化。
++
++### 2.1 归一化前与归一化后
++
++#### 2.1.1 UNC 路径归一化
++
++```
++输入 patternList: ['', '', 'host', 'share', ...rest]
++                 (空) (空)  (host)  (share)
++
++步骤：
++1. 解构出前四个元素和剩余部分
++2. 如果 prest[0] === ''（末尾有斜杠），则移除
++3. 将前四个元素与一个空字符串重新 join('/')：
++   ['', '', 'host', 'share', ''].join('/') = '//host/share/'
++4. 新的 patternList = ['//host/share/', ...rest]
++```
++
++**示例**：
++
++| 输入 | `patternList` 原始值 | 归一化后 |
++|---|---|---|
++| `//host/share` | `['', '', 'host', 'share']` | `['//host/share/']` |
++| `//host/share/` | `['', '', 'host', 'share', '']` | 移除末尾空串 → `['//host/share/']` |
++| `//host/share/x/*` | `['', '', 'host', 'share', 'x', '*']` | `['//host/share/', 'x', '*']` |
++| `//?/z:/x/*` | `['', '', '?', 'z:', 'x', '*']` | `['//?/z:/', 'x', '*']` |
++
++#### 2.1.2 驱动器路径/绝对路径归一化
++
++```
++输入 patternList（驱动器）: ['C:', 'foo', ...rest]
++输入 patternList（绝对）  : ['', 'etc', ...rest]
++
++步骤：
++1. 解构出第一个元素和剩余部分
++2. 如果 prest[0] === ''（末尾有斜杠），则移除
++3. 将第一个元素后追加 '/'：
++   'C:' + '/' = 'C:/'
++   '' + '/' = '/'
++4. 新的 patternList = ['C:/', ...rest] 或 ['/', ...rest]
++```
++
++**示例**：
++
++| 输入 | `patternList` 原始值 | 归一化后 |
++|---|---|---|
++| `C:/foo/bar` | `['C:', 'foo', 'bar']` | `['C:/', 'foo', 'bar']` |
++| `C:/` | `['C:', '']` | 移除末尾空串 → `['C:/']` |
++| `/etc/file` | `['', 'etc', 'file']` | `['/', 'etc', 'file']` |
++| `/` | `['', '']` | 移除末尾空串 → `['/']` |
++
++### 2.2 `globList` 的同步归一化
++
++`globList` 与 `patternList` 一一对应，上述所有操作同步应用于 `globList`。`globList` 是 `patternList` 的字符串化版本（glob 魔法被展开后的纯字符串表示）。
++
++### 2.3 卷信息的保留
++
++归一化后，根条目（`patternList[0]`）完整保留了卷信息：
++
++- UNC 路径：`//host/share/` —— 包含双斜杠、主机名和共享名
++- 驱动器路径：`C:/` —— 包含驱动器和冒号
++- POSIX 绝对路径：`/` —— 仅有根斜杠
++
++---
++
++## 3. 不同平台下 `root()` 返回值的差异与设计意图
++
++### 3.1 `root()` 实现
++
++```typescript
++root(): string {
++    const p = this.#patternList[0]
++    return (
++        typeof p === 'string' && this.isAbsolute() && this.#index === 0
++      ) ?
++        p
++      : ''
++}
++```
++
++### 3.2 各平台返回值
++
++| 平台 | 输入模式 | `root()` 返回值 |
++|---|---|---|
++| `win32` | `//server/share/x/*` | `//server/share/` |
++| `win32` | `C:/foo/bar/**` | `C:/` |
++| `win32` | `/etc/file` | `/` |
++| `posix` | `/etc/file` | `/` |
++| 任意 | `foo/bar`（相对路径） | `''`（空字符串） |
++| 任意 | `./foo` | `''`（相对路径，不为绝对） |
++
++### 3.3 设计意图
++
++`root()` 在文件系统遍历（见 `src/processor.ts`）中用于确定绝对路径的起始查找位置：
++
++```typescript
++// processor.ts
++if (root) {
++    t = t.resolve(
++      root === '/' && this.opts.root !== undefined ?
++        this.opts.root
++      : root,
++    )
++    const rest = pattern.rest()
++    // ...继续遍历
++}
++```
++
++设计要点：
++
++1. **POSIX 绝对路径**（`/`）：当 `root === '/'` 时，使用 `opts.root`（通常是 CWD 的根挂载点）而非字面上的 `/`。这允许在非根目录的 CWD 下工作。
++
++2. **Windows 驱动器路径**（`C:/`）：直接按字面解析，`Path.resolve('C:/')` 会定位到 C 盘的根目录。
++
++3. **UNC 路径**（`//server/share/`）：直接按字面解析，`Path.resolve('//server/share/')` 定位到网络共享的根。
++
++4. **相对路径**：返回空字符串，`processor.ts` 中跳过 `root()` 处理，从 CWD 开始匹配。
++
++---
++
++## 4. 当前实现中可能存在的边缘情况
++
++### 4.1 `//` 开头的非 UNC 路径
++
++- **模式**：`//foo`（在 Win32 上，缺少共享名）
++- **预期问题**：用户可能期望它被视为 UNC，但 `isUNC()` 因 `pl[3]` 不存在或为空而返回 `false`
++- **实际行为**：`isAbsolute()` 因 `pl[0] === '' && pl.length > 1` 返回 `true`，root 为 `/`
++- **影响**：退化为 POSIX 风格的绝对路径，丢失主机名信息
++
++### 4.2 `//server/` 带末尾斜杠但无共享名
++
++- **模式**：`//server/`（在 Win32 上）
++- **`patternList`**：`['', '', 'server', '']`
++- **`isUNC()`**：`pl[3] === ''`，`!!''` 为 `false`，返回 `false`
++- **实际行为**：被识别为普通绝对路径，root 为 `/`
++- **影响**：与用户可能的预期（视为 UNC 路径）不一致
++
++### 4.3 单独的 `['C:']` 不被视为驱动器路径
++
++- `isDrive()` 要求 `this.length > 1`
++- 如果 minimatch 输出 `['C:']`（长度为 1），则不会被识别为驱动器路径
++- 但在实际使用中，末尾的斜杠会导致 minimatch 输出 `['C:', '']`（长度为 2），从而正常识别
++
++### 4.4 非 Win32 平台下的 `//` 前缀
++
++- 在 POSIX 系统上，多个连续斜杠与单斜杠等价
++- `isUNC()` 因 `platform !== 'win32'` 始终返回 `false`
++- 模式 `//foo/bar` 会被视为绝对路径 `/foo/bar`，语义正确
++
++### 4.5 `globString()` 中绝对路径的特殊拼接
++
++对于绝对路径，`globString()` 使用：
++
++```typescript
++this.#globList[0] + this.#globList.slice(1).join('/')
++```
++
++而非 `this.#globList.join('/')`。这是因为根条目（如 `//host/share/` 或 `C:/`）末尾已包含 `/`，如果直接 join 会产生双斜杠（如 `//host/share//x/*`）。这一处理对 UNC 和驱动器路径至关重要。
++
++### 4.6 `rest()` 传播的元数据
++
++`rest()` 方法创建子 `Pattern` 时，会手动将 `#isAbsolute`、`#isUNC`、`#isDrive` 标记传播到后续片段：
++
++```typescript
++this.#rest.#isAbsolute = this.#isAbsolute
++this.#rest.#isUNC = this.#isUNC
++this.#rest.#isDrive = this.#isDrive
++```
++
++这使得 `isAbsolute()` 等方法在非根索引（`index > 0`）下仍然返回正确的值，而不会因为 `index !== 0` 导致检测失败。
++
++---
++
++## 5. 具体示例：内部转化过程
++
++### 5.1 示例一：`'//server/**/*.js'`（Win32 平台）
++
++#### 步骤 1：minimatch 解析
++
++```
++输入模式: '//server/**/*.js'
++platform = 'win32'
++
++minimatch 按 '/' 分割:
++  patternList = ['', '', 'server', '**', '*.js']
++  globList    = ['', '', 'server', '**', '*.js']
++```
++
++#### 步骤 2：`Pattern` 构造（`index = 0`）
++
++```
++isUNC() 检测:
++  pl[0] === ''   ✓
++  pl[1] === ''   ✓
++  pl[2] = 'server' (非空字符串) ✓
++  pl[3] = '**'    (非空字符串) ✓
++  → true
++
++进入 UNC 归一化分支:
++  p0='', p1='', p2='server', p3='**'
++  prest = ['*.js']  (没有末尾 ''，无斜杠结尾)
++  
++  p = ['', '', 'server', '**', ''].join('/') = '//server/**/'
++  g = ['', '', 'server', '**', ''].join('/') = '//server/**/'
++  
++  新的 patternList = ['//server/**/', '*.js']
++  新的 globList    = ['//server/**/', '*.js']
++```
++
++#### 步骤 3：构建后状态
++
++```
++patternList  = ['//server/**/', '*.js']
++globList     = ['//server/**/', '*.js']
++length       = 2
++isUNC()      = true
++isAbsolute() = true
++root()       = '//server/**/'
++globString() = '//server/**/' + '*.js' = '//server/**/*.js'
++```
++
++**关键观察**：`**`（globstar）被合并到了 UNC 根目录字符串中，因为它在路径中是第 4 个位置，与 share 名同级。这意味着 UNC 的根条目可以包含 glob 魔法字符。
++
++### 5.2 示例二：`'C:/foo/bar/**'`（Win32 平台）
++
++#### 步骤 1：minimatch 解析
++
++```
++输入模式: 'C:/foo/bar/**'
++platform = 'win32'
++
++minimatch 按 '/' 分割:
++  patternList = ['C:', 'foo', 'bar', '**']
++  globList    = ['C:', 'foo', 'bar', '**']
++```
++
++#### 步骤 2：`Pattern` 构造（`index = 0`）
++
++```
++isUNC() 检测:
++  platform === 'win32' ✓
++  pl[0] = 'C:' !== '' → false
++
++isDrive() 检测:
++  platform === 'win32' ✓
++  index === 0 ✓
++  length = 4 > 1 ✓
++  typeof pl[0] = 'C:' 为 string ✓
++  /^[a-z]:$/i.test('C:') ✓
++  → true
++
++isAbsolute() = true (因为 isDrive() 为 true)
++
++进入驱动器路径归一化分支:
++  p1 = 'C:', prest = ['foo', 'bar', '**']
++  prest[0] = 'foo' !== '' (无末尾斜杠)
++  p = 'C:' + '/' = 'C:/'
++  g = 'C:' + '/' = 'C:/'
++  
++  新的 patternList = ['C:/', 'foo', 'bar', '**']
++  新的 globList    = ['C:/', 'foo', 'bar', '**']
++```
++
++#### 步骤 3：构建后状态
++
++```
++patternList  = ['C:/', 'foo', 'bar', '**']
++globList     = ['C:/', 'foo', 'bar', '**']
++length       = 4
++isDrive()    = true
++isAbsolute() = true
++root()       = 'C:/'
++globString() = 'C:/' + 'foo/bar/**' = 'C:/foo/bar/**'
++```
++
++### 5.3 对比：非 Win32 平台下 `'//server/**/*.js'`
++
++在 POSIX 系统上：
++
++```
++minimatch 解析与 Win32 相同:
++  patternList = ['', '', 'server', '**', '*.js']
++
++isUNC() 检测:
++  platform !== 'win32' → false
++
++isDrive() 检测:
++  platform !== 'win32' → false
++
++isAbsolute() 检测:
++  pl[0] === '' && pl.length > 1 → true
++
++归一化后:
++  patternList = ['/', 'server', '**', '*.js']
++  globList    = ['/', 'server', '**', '*.js']
++  root()      = '/'
++  isAbsolute() = true
++  globString() = '/' + 'server/**/*.js' = '/server/**/*.js'
++```
++
++在 POSIX 下，`//server/**/*.js` 被简单地当作 `/server/**/*.js` 处理，多个连续斜杠被合并为单个 `/`。
++
++---
++
++## 总结
++
++`Pattern` 类通过检查 `patternList` 数组的前几个元素来区分 UNC、驱动器路径和 POSIX 绝对路径，并在构造时将分散的根路径分量合并为单一的规范化根字符串。这一设计使得下游代码（如 `processor.ts`）可以统一通过 `root()` 获取查找起点，而无需关心底层路径类型的差异。主要的边缘情况集中在**不完整的 UNC 路径**（缺少共享名）上，这些情况在当前实现中会安全地退化为普通绝对路径。
+\ No newline at end of file

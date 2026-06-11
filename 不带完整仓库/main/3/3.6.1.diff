@@ -1,0 +1,294 @@
+﻿diff --git a/README.md b/README.md
+index 51c9952..d8ebe84 100644
+--- a/README.md
++++ b/README.md
+@@ -213,6 +213,42 @@ if you had called it on `['xay', 'xby']`. When
+ `magicalBraces:true` is in the options, brace expansion _is_
+ treated as a pattern having magic.
+ 
++## `toRegExp(pattern: string, options?: GlobToRegExpOptions) => RegExp`
++
++Convert a glob pattern into a JavaScript `RegExp` using the same
++pattern parsing rules as `glob`.
++
++By default, the returned regular expression matches the entire
++relative path string the same way `glob` does. Set
++`fullMatch:false` to remove the leading and trailing anchors when
++you want to search for matching path fragments inside larger
++strings.
++
++```js
++const re = glob.toRegExp('src/**/*.{js,ts}')
++const jsOrTs = paths.filter(path => re.test(path))
++```
++
++```bash
++sed -n 's/^PATH=//p' manifest.txt \
++  | node -e "import { glob } from 'glob';
++const re = glob.toRegExp('src/**/*.ts')
++process.stdin.setEncoding('utf8')
++let data = ''
++process.stdin.on('data', chunk => (data += chunk))
++process.stdin.on('end', () => {
++  for (const line of data.split(/\r?\n/)) {
++    if (re.test(line)) console.log(line)
++  }
++})"
++```
++
++## `escapeRegExp(str: string) => string`
++
++Escape all regular expression syntax characters in a literal
++string. Unlike `escape()`, this does not treat glob syntax
++specially.
++
+ ## `escape(pattern: string, options?: GlobOptions) => string`
+ 
+ Escape all magic characters in a glob pattern, so that it will
+diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..c659e5a 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -350,6 +350,10 @@ export interface GlobOptions {
+   braceExpandMax?: number
+ }
+ 
++export interface GlobToRegExpOptions extends GlobOptions {
++  fullMatch?: boolean
++}
++
+ export type GlobOptionsWithFileTypesTrue = GlobOptions & {
+   withFileTypes: true
+   // string options not relevant if returning Path objects.
+@@ -383,6 +387,59 @@ export type FileTypes<Opts> =
+  * An object that can perform glob pattern traversals.
+  */
+ export class Glob<Opts extends GlobOptions> implements GlobOptions {
++  /**
++   * Escape regular expression syntax in a literal string.
++   */
++  static escapeRegExp(str: string): string {
++    return str.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
++  }
++
++  /**
++   * Convert a glob pattern into a JavaScript `RegExp`.
++   */
++  static toRegExp(
++    pattern: string,
++    options: GlobToRegExpOptions = {},
++  ): RegExp {
++    const platform = options.platform || defaultPlatform
++    const windowsPathsNoEscape =
++      !!options.windowsPathsNoEscape ||
++      options.allowWindowsEscape === false
++
++    if (options.matchBase && options.noglobstar) {
++      throw new TypeError('base matching requires globstar')
++    }
++
++    const nocase =
++      options.nocase ??
++      (platform === 'darwin' || platform === 'win32')
++
++    const mm = new Minimatch(
++      windowsPathsNoEscape ? pattern.replace(/\\/g, '/') : pattern,
++      {
++        braceExpandMax: 10_000,
++        ...options,
++        nocase,
++        nocomment: true,
++        nonegate: true,
++        optimizationLevel: 2,
++        platform,
++        windowsPathsNoEscape,
++      },
++    )
++    const re = mm.makeRe()
++    if (!re) {
++      throw new TypeError(`invalid glob pattern: ${pattern}`)
++    }
++    if (options.fullMatch !== false) {
++      return re
++    }
++    return new RegExp(
++      re.source.replace(/^\^/, '').replace(/\$$/, ''),
++      re.flags,
++    )
++  }
++
+   absolute?: boolean
+   cwd: string
+   root?: string
+diff --git a/src/index.ts b/src/index.ts
+index 160a1b0..cd26900 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -6,6 +6,7 @@ import type {
+   GlobOptionsWithFileTypesFalse,
+   GlobOptionsWithFileTypesTrue,
+   GlobOptionsWithFileTypesUnset,
++  GlobToRegExpOptions,
+ } from './glob.js'
+ import { Glob } from './glob.js'
+ import { hasMagic } from './has-magic.js'
+@@ -24,6 +25,7 @@ export type {
+   GlobOptionsWithFileTypesFalse,
+   GlobOptionsWithFileTypesTrue,
+   GlobOptionsWithFileTypesUnset,
++  GlobToRegExpOptions,
+ } from './glob.js'
+ export { hasMagic } from './has-magic.js'
+ export { Ignore } from './ignore.js'
+@@ -140,6 +142,20 @@ async function glob_(
+   return new Glob(pattern, options).walk()
+ }
+ 
++/**
++ * Convert a glob pattern into a JavaScript `RegExp`.
++ */
++export const toRegExp = (
++  pattern: string,
++  options: GlobToRegExpOptions = {},
++): RegExp => Glob.toRegExp(pattern, options)
++
++/**
++ * Escape regular expression syntax in a literal string.
++ */
++export const escapeRegExp = (str: string): string =>
++  Glob.escapeRegExp(str)
++
+ /**
+  * Return a sync iterator for walking glob pattern matches.
+  */
+@@ -220,5 +236,7 @@ export const glob = Object.assign(glob_, {
+   hasMagic,
+   escape,
+   unescape,
++  toRegExp,
++  escapeRegExp,
+ })
+ glob.glob = glob
+diff --git a/test/escape.ts b/test/escape.ts
+index 2683191..c7a75f2 100644
+--- a/test/escape.ts
++++ b/test/escape.ts
+@@ -1,23 +1,95 @@
+-import t from 'tap'
+-import { unescape, escape, hasMagic } from '../dist/esm/index.js'
+-import { bashResults } from './bash-results.js'
+-
+-for (const pattern of Object.keys(bashResults)) {
+-  t.notOk(hasMagic(escape(pattern)), `escape(${pattern})`)
+-  const pp = escape(pattern)
+-  const pw = escape(pattern, {
+-    windowsPathsNoEscape: true,
+-  })
+-  t.notOk(
+-    hasMagic(pp, { platform: 'linux' }),
+-    'no magic after posix escape',
+-  )
+-  t.notOk(
+-    hasMagic(pw, { platform: 'win32', windowsPathsNoEscape: true }),
+-    'no magic after windows escape',
+-  )
+-  const up = unescape(pp)
+-  const uw = unescape(pw, { windowsPathsNoEscape: true })
+-  t.equal(up, pattern, 'unescaped posix pattern returned')
+-  t.equal(uw, pattern, 'unescaped windows pattern returned')
+-}
++import { Minimatch } from 'minimatch'
++import t from 'tap'
++import { Glob, escape, glob, hasMagic, unescape } from '../dist/esm/index.js'
++import { bashResults } from './bash-results.js'
++
++for (const pattern of Object.keys(bashResults)) {
++  t.notOk(hasMagic(escape(pattern)), `escape(${pattern})`)
++  const pp = escape(pattern)
++  const pw = escape(pattern, {
++    windowsPathsNoEscape: true,
++  })
++  t.notOk(
++    hasMagic(pp, { platform: 'linux' }),
++    'no magic after posix escape',
++  )
++  t.notOk(
++    hasMagic(pw, { platform: 'win32', windowsPathsNoEscape: true }),
++    'no magic after windows escape',
++  )
++  const up = unescape(pp)
++  const uw = unescape(pw, { windowsPathsNoEscape: true })
++  t.equal(up, pattern, 'unescaped posix pattern returned')
++  t.equal(uw, pattern, 'unescaped windows pattern returned')
++}
++
++t.test('escapeRegExp escapes regex syntax literally', async t => {
++  const escaped = glob.escapeRegExp('a+b?.[jt]s')
++  t.equal(escaped, 'a\\+b\\?\\.\\[jt\\]s')
++  const re = new RegExp(escaped)
++  t.match('a+b?.[jt]s', re)
++  t.notMatch('abx.js', re)
++  t.equal(escaped, Glob.escapeRegExp('a+b?.[jt]s'))
++})
++
++t.test('toRegExp matches the same paths as minimatch by default', async t => {
++  const cases = [
++    {
++      name: 'wildcards',
++      pattern: '*.js',
++      options: {},
++      paths: ['foo.js', 'foo.ts', 'src/foo.js', '.foo.js'],
++    },
++    {
++      name: 'braces',
++      pattern: 'src/*.{js,ts}',
++      options: {},
++      paths: ['src/a.js', 'src/a.ts', 'src/a.jsx', 'src/a/b.js'],
++    },
++    {
++      name: 'character classes',
++      pattern: 'file-[[:digit:]][ab].js',
++      options: {},
++      paths: ['file-1a.js', 'file-2b.js', 'file-aa.js', 'dir/file-1a.js'],
++    },
++    {
++      name: 'windows paths no escape',
++      pattern: 'src\\*.js',
++      options: { platform: 'win32' as const, windowsPathsNoEscape: true },
++      paths: ['src/foo.js', 'src\\foo.js', 'src/bar.ts'],
++    },
++    {
++      name: 'nocase',
++      pattern: 'README.md',
++      options: { nocase: true },
++      paths: ['README.md', 'readme.md', 'docs/README.md'],
++    },
++  ]
++
++  for (const { name, pattern, options, paths } of cases) {
++    const re = glob.toRegExp(pattern, options)
++    const mm = new Minimatch(pattern, {
++      ...options,
++      nocomment: true,
++      nonegate: true,
++      optimizationLevel: 2,
++    })
++
++    for (const path of paths) {
++      t.equal(
++        re.test(path),
++        mm.match(path),
++        `${name}: ${pattern} => ${path}`,
++      )
++    }
++  }
++
++  t.ok(glob.toRegExp('*.js').test('foo.js'))
++  t.notOk(glob.toRegExp('*.js').test('src/foo.js'))
++})
++
++t.test('toRegExp can search for path fragments with fullMatch:false', async t => {
++  const re = glob.toRegExp('*.js', { fullMatch: false })
++  t.match('prefix foo.js suffix', re)
++  t.notMatch('prefix foo.ts suffix', re)
++})

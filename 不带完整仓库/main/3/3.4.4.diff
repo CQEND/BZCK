@@ -1,0 +1,206 @@
+﻿diff --git a/test/absolute.ts b/test/absolute.ts
+index 1cc5f8b..3f30483 100644
+--- a/test/absolute.ts
++++ b/test/absolute.ts
+@@ -1,48 +1,153 @@
+-import { isAbsolute } from 'path'
+-import type { Test } from 'tap'
+-import t from 'tap'
+-import { fileURLToPath } from 'url'
+-import { Glob } from '../dist/esm/index.js'
+-import { bashResults } from './bash-results.js'
+-
+-const pattern = 'a/b/**'
+-const __dirname = fileURLToPath(new URL('.', import.meta.url))
+-process.chdir(`${__dirname}/fixtures`)
+-
+-const ok = (t: Test, file: string) =>
+-  t.ok(isAbsolute(file), 'must be absolute', { found: file })
+-
+-var marks = [true, false]
+-for (const mark of marks) {
+-  t.test(`mark=${mark}`, t => {
+-    t.plan(2)
+-
+-    t.test('Emits absolute matches if option set', async t => {
+-      var g = new Glob(pattern, { absolute: true, posix: true })
+-      const results = await g.walk()
+-
+-      t.equal(
+-        results.length,
+-        bashResults[pattern]?.length,
+-        'must match all files',
+-      )
+-      for (const m of results) {
+-        t.ok(m.startsWith('/'), `starts with / ${m}`)
+-      }
+-    })
+-
+-    t.test('returns absolute results synchronously', async t => {
+-      var g = new Glob(pattern, { absolute: true })
+-      const results = g.walkSync()
+-
+-      t.equal(
+-        results.length,
+-        bashResults[pattern]?.length,
+-        'must match all files',
+-      )
+-      for (const m of results) {
+-        ok(t, m)
+-      }
+-    })
+-  })
+-}
++import { isAbsolute, resolve } from 'path'
++import type { Test } from 'tap'
++import t from 'tap'
++import { fileURLToPath } from 'url'
++import { Glob } from '../dist/esm/index.js'
++import { bashResults } from './bash-results.js'
++
++const pattern = 'a/b/**'
++const __dirname = fileURLToPath(new URL('.', import.meta.url))
++process.chdir(`${__dirname}/fixtures`)
++
++const ok = (t: Test, file: string) =>
++  t.ok(isAbsolute(file), 'must be absolute', { found: file })
++
++var marks = [true, false]
++for (const mark of marks) {
++  t.test(`mark=${mark}`, t => {
++    t.plan(9)
++
++    t.test('Emits absolute matches if option set', async t => {
++      var g = new Glob(pattern, { absolute: true, posix: true })
++      const results = await g.walk()
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        t.ok(m.startsWith('/'), `starts with / ${m}`)
++      }
++    })
++
++    t.test('returns absolute results synchronously', async t => {
++      var g = new Glob(pattern, { absolute: true })
++      const results = g.walkSync()
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute results via stream (async)', async t => {
++      var g = new Glob(pattern, { absolute: true })
++      const results: string[] = []
++      for await (const m of g.stream()) {
++        results.push(m as string)
++      }
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute results via streamSync', async t => {
++      var g = new Glob(pattern, { absolute: true })
++      const results: string[] = []
++      for (const m of g.streamSync()) {
++        results.push(m as string)
++      }
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute results via iterate (async)', async t => {
++      var g = new Glob(pattern, { absolute: true })
++      const results: string[] = []
++      for await (const m of g.iterate()) {
++        results.push(m as string)
++      }
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute results via iterateSync', async t => {
++      var g = new Glob(pattern, { absolute: true })
++      const results: string[] = []
++      for (const m of g.iterateSync()) {
++        results.push(m as string)
++      }
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute paths when combined with stat option', async t => {
++      var g = new Glob(pattern, { absolute: true, stat: true })
++      const results = await g.walk()
++
++      t.equal(
++        results.length,
++        bashResults[pattern]?.length,
++        'must match all files',
++      )
++      for (const m of results) {
++        ok(t, m)
++      }
++    })
++
++    t.test('returns absolute paths when cwd is a custom directory', async t => {
++      const customCwd = resolve(__dirname, 'fixtures', 'a')
++      var g = new Glob('b/**', { absolute: true, cwd: customCwd })
++      const results = await g.walk()
++
++      t.ok(results.length > 0, 'must match some files')
++      for (const m of results) {
++        ok(t, m)
++        t.ok(
++          (m as string).startsWith(customCwd),
++          `must be resolved against custom cwd: ${m}`,
++        )
++      }
++    })
++
++    t.test('defaults to relative paths when absolute is not set', async t => {
++      var g = new Glob(pattern, {})
++      const results = await g.walk()
++      for (const m of results) {
++        t.notOk(isAbsolute(m as string), `must be relative: ${m}`)
++      }
++    })
++  })
++}

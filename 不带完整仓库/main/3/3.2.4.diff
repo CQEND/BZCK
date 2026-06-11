@@ -1,0 +1,688 @@
+﻿diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..a5f09f8 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -10,6 +10,7 @@ import {
+   PathScurryWin32,
+ } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
++import { Ignore, loadGitignore } from './ignore.js'
+ import { Pattern } from './pattern.js'
+ import { GlobStream, GlobWalker } from './walker.js'
+ 
+@@ -100,6 +101,22 @@ export interface GlobOptions {
+    */
+   follow?: boolean
+ 
++  /**
++   * Load ignore patterns from a `.gitignore` file and merge them with the
++   * patterns supplied to {@link GlobOptions.ignore}.
++   *
++   * - If `true`, walk up from {@link GlobOptions.cwd} looking for the nearest
++   *   `.gitignore` file and use it.
++   * - If a string, treat it as the direct path to a `.gitignore`-formatted
++   *   file.
++   * - If unset or `false`, no `.gitignore` file is consulted.
++   *
++   * Gitignore pattern semantics (directory-only, anchored vs. anywhere) are
++   * translated into glob patterns that are compatible with this module's
++   * `Ignore` class.
++   */
++  gitignore?: boolean | string
++
+   /**
+    * string or string[], or an object with `ignored` and `childrenIgnored`
+    * methods.
+@@ -408,6 +425,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+   windowsPathsNoEscape: boolean
+   withFileTypes: FileTypes<Opts>
+   includeChildMatches: boolean
++  gitignore?: boolean | string
+ 
+   /**
+    * The options provided to the constructor.
+@@ -461,7 +479,49 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     this.maxDepth =
+       typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity
+     this.stat = !!opts.stat
+-    this.ignore = opts.ignore
++
++    // Load any .gitignore-derived patterns and merge them with the
++    // user-supplied ignore list.  User-provided ignore patterns always take
++    // precedence and are not overwritten — we simply append to them.
++    this.gitignore = opts.gitignore
++    const giPatterns = this.gitignore ?
++      loadGitignore({
++        gitignore: this.gitignore,
++        cwd: this.cwd || process.cwd(),
++        platform: opts.platform || defaultPlatform,
++      })
++    : []
++
++    if (giPatterns.length > 0) {
++      if (typeof opts.ignore === 'string') {
++        this.ignore = [opts.ignore, ...giPatterns]
++      } else if (Array.isArray(opts.ignore)) {
++        this.ignore = [...opts.ignore, ...giPatterns]
++      } else if (opts.ignore && typeof opts.ignore === 'object') {
++        // an IgnoreLike object is supplied – we cannot "merge" into it, so
++        // build a composite that consults both.
++        const userIgnore = opts.ignore
++        const platform = opts.platform || defaultPlatform
++        const giIgnore = new Ignore(giPatterns, {
++          nobrace: this.nobrace,
++          nocase: this.nocase,
++          noext: this.noext,
++          noglobstar: this.noglobstar,
++          platform,
++        })
++        this.ignore = {
++          ignored: (p) =>
++            !!userIgnore.ignored?.(p) || !!giIgnore.ignored(p),
++          childrenIgnored: (p) =>
++            !!userIgnore.childrenIgnored?.(p) ||
++            !!giIgnore.childrenIgnored(p),
++        }
++      } else {
++        this.ignore = giPatterns
++      }
++    } else {
++      this.ignore = opts.ignore
++    }
+ 
+     if (this.withFileTypes && this.absolute !== undefined) {
+       throw new Error('cannot set absolute and withFileTypes:true')
+@@ -488,7 +548,12 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     this.pattern = p
+ 
+     this.platform = opts.platform || defaultPlatform
+-    this.opts = { ...opts, platform: this.platform }
++    this.opts = {
++      ...opts,
++      platform: this.platform,
++      ignore: this.ignore,
++      gitignore: this.gitignore,
++    }
+     if (opts.scurry) {
+       this.scurry = opts.scurry
+       if (
+diff --git a/src/ignore.ts b/src/ignore.ts
+index 9fad545..29593b2 100644
+--- a/src/ignore.ts
++++ b/src/ignore.ts
+@@ -3,6 +3,8 @@
+ // Ignoring a path ignores its children if the pattern ends in /**
+ // Ignores are always parsed in dot:true mode
+ 
++import { readFileSync } from 'fs'
++import { dirname, isAbsolute, join, resolve, sep } from 'path'
+ import type { MinimatchOptions } from 'minimatch'
+ import { Minimatch } from 'minimatch'
+ import type { Path } from 'path-scurry'
+@@ -24,6 +26,182 @@ const defaultPlatform: NodeJS.Platform =
+     process.platform
+   : 'linux'
+ 
++/**
++ * Options used by {@link loadGitignore} to find and parse a `.gitignore` file.
++ */
++export interface LoadGitignoreOptions {
++  /**
++   * If `true`, walk up the directory tree starting at `cwd` looking for the
++   * nearest `.gitignore` file. If a string, treat it as the direct path to a
++   * `.gitignore`-formatted file.
++   */
++  gitignore?: boolean | string
++  /**
++   * The starting directory for the search when `gitignore: true` is used.
++   * Defaults to `process.cwd()`.
++   */
++  cwd?: string
++  /**
++   * The platform style used for path manipulation. Defaults to
++   * `process.platform`.
++   */
++  platform?: NodeJS.Platform
++}
++
++const findUp = (name: string, from: string): string | undefined => {
++  let dir = isAbsolute(from) ? from : resolve(from)
++  let prev: string | undefined = undefined
++  while (dir !== prev) {
++    const candidate = join(dir, name)
++    try {
++      const stat = require('fs').statSync(candidate)
++      if (stat.isFile()) return candidate
++    } catch {
++      /* not found here */
++    }
++    prev = dir
++    dir = dirname(dir)
++  }
++  return undefined
++}
++
++/**
++ * Convert a raw `.gitignore` pattern into one or more glob patterns suitable
++ * for feeding into the `Ignore` class.
++ *
++ * Gitignore semantics differ from glob semantics in a few important ways:
++ *
++ * - `foo/` matches only directories named `foo` (and their contents).
++ * - A pattern without a leading `/` matches at any depth in the tree.
++ * - A pattern *with* a leading `/` is matched relative to the gitignore file's
++ *   directory.
++ * - A pattern with a slash in the middle is also relative to the gitignore
++ *   directory.
++ * - Blank lines and lines starting with `#` are comments (handled by the
++ *   caller).
++ *
++ * This helper produces two forms per input entry:
++ *
++ * - `<pattern>` — matches the path itself (file or directory)
++ * - `<pattern>/**` — matches anything beneath it
++ *
++ * which is what the `Ignore` class expects so that descendants are also
++ * excluded.
++ */
++export const gitignoreToGlobPatterns = (
++  pattern: string,
++  basePath: string,
++  platform: NodeJS.Platform = defaultPlatform,
++): string[] => {
++  let p = pattern
++
++  // trim trailing whitespace that is not escaped
++  if (/[^\\]\s+$/.test(p)) p = p.replace(/\s+$/, '')
++  if (!p) return []
++
++  // detect and strip trailing slash (directory-only)
++  const dirOnly = p.endsWith('/')
++  if (dirOnly) {
++    p = p.slice(0, -1)
++    if (!p) return []
++  }
++
++  const anchoredAtRoot = p.startsWith('/')
++  if (anchoredAtRoot) p = p.slice(1)
++
++  // decide whether this pattern is anchored to the gitignore directory
++  const hasMiddleSlash = p.includes('/')
++  const anchored = anchoredAtRoot || hasMiddleSlash
++
++  const normaliseBase = (s: string): string =>
++    s.split(sep).join('/').replace(/\/+$/, '')
++
++  const base = normaliseBase(basePath)
++  const stem = String(p).split(sep).join('/')
++
++  // For anchored patterns we emit relative-to-base paths. For unanchored
++  // ("anywhere") patterns, emit both a plain form and a **-prefixed form so
++  // the match succeeds at any depth.
++  let forms: string[]
++  if (anchored) {
++    forms = [`${base}/${stem}`]
++  } else {
++    forms = [`${base}/${stem}`, `**/${stem}`, stem]
++  }
++
++  // For directory-only matches: ignore the directory itself (via the form
++  // ending in the directory name) and everything inside it (/**).
++  // For file/directory matches: same thing — the plain form matches files
++  // and directories by name, and the /** form prunes descendants.
++  const expanded: string[] = []
++  for (const f of forms) {
++    expanded.push(f)
++    expanded.push(`${f}/**`)
++  }
++
++  // de-duplicate while preserving order
++  return Array.from(new Set(expanded))
++}
++
++/**
++ * Locate and parse a `.gitignore` file, returning an array of glob-style
++ * ignore patterns ready to be passed to the `ignore` option of {@link Glob}
++ * or to {@link Ignore.add}.
++ *
++ * If `opt.gitignore` is `true` the nearest `.gitignore` on the directory
++ * chain above `opt.cwd` is used. If it is a string, it is treated as the
++ * direct file path.
++ *
++ * An empty array is returned if no file can be found or read.
++ */
++export const loadGitignore = (
++  opt: LoadGitignoreOptions = {},
++): string[] => {
++  const { gitignore, cwd = process.cwd(), platform = defaultPlatform } = opt
++  if (!gitignore) return []
++
++  let file: string | undefined
++  if (typeof gitignore === 'string') {
++    file = gitignore
++  } else {
++    file = findUp('.gitignore', cwd)
++  }
++  if (!file) return []
++
++  let contents: string
++  try {
++    contents = readFileSync(file, 'utf8')
++  } catch {
++    return []
++  }
++
++  const base = dirname(file)
++  const lines = contents.split(/\r?\n/)
++  const patterns: string[] = []
++
++  for (const raw of lines) {
++    let line = raw
++    if (!line) continue
++    if (line.startsWith('#')) continue
++
++    // trim unescaped trailing whitespace
++    if (/[^\\]\s+$/.test(line)) line = line.replace(/\s+$/, '')
++    if (!line) continue
++
++    // un-escape leading \# so a literal hash can be matched
++    if (line.startsWith('\\#')) line = line.slice(1)
++
++    // negations are not supported in this simple loader (they would
++    // require a layered ignore stack) — skip for now.
++    if (line.startsWith('!')) continue
++
++    const pats = gitignoreToGlobPatterns(line, base, platform)
++    for (const p of pats) patterns.push(p)
++  }
++
++  return patterns
++}
++
+ /**
+  * Class used to process ignored patterns
+  */
+@@ -65,18 +243,6 @@ export class Ignore implements IgnoreLike {
+   }
+ 
+   add(ign: string) {
+-    // this is a little weird, but it gives us a clean set of optimized
+-    // minimatch matchers, without getting tripped up if one of them
+-    // ends in /** inside a brace section, and it's only inefficient at
+-    // the start of the walk, not along it.
+-    // It'd be nice if the Pattern class just had a .test() method, but
+-    // handling globstars is a bit of a pita, and that code already lives
+-    // in minimatch anyway.
+-    // Another way would be if maybe Minimatch could take its set/globParts
+-    // as an option, and then we could at least just use Pattern to test
+-    // for absolute-ness.
+-    // Yet another way, Minimatch could take an array of glob strings, and
+-    // a cwd option, and do the right thing.
+     const mm = new Minimatch(ign, this.mmopts)
+     for (let i = 0; i < mm.set.length; i++) {
+       const parsed = mm.set[i]
+@@ -85,8 +251,6 @@ export class Ignore implements IgnoreLike {
+       if (!parsed || !globParts) {
+         throw new Error('invalid pattern object')
+       }
+-      // strip off leading ./ portions
+-      // https://github.com/isaacs/node-glob/issues/570
+       while (parsed[0] === '.' && globParts[0] === '.') {
+         parsed.shift()
+         globParts.shift()
+diff --git a/src/index.ts b/src/index.ts
+index 160a1b0..d16f3a4 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -26,8 +26,8 @@ export type {
+   GlobOptionsWithFileTypesUnset,
+ } from './glob.js'
+ export { hasMagic } from './has-magic.js'
+-export { Ignore } from './ignore.js'
+-export type { IgnoreLike } from './ignore.js'
++export { Ignore, loadGitignore, gitignoreToGlobPatterns } from './ignore.js'
++export type { IgnoreLike, LoadGitignoreOptions } from './ignore.js'
+ export type { MatchStream } from './walker.js'
+ 
+ /**
+diff --git a/test/gitignore.ts b/test/gitignore.ts
+new file mode 100644
+index 0000000..f5b4d84
+--- /dev/null
++++ b/test/gitignore.ts
+@@ -0,0 +1,335 @@
++import { writeFileSync } from 'fs'
++import { join } from 'path'
++import t from 'tap'
++import type { GlobOptionsWithFileTypesUnset } from '../src/index.js'
++import {
++  gitignoreToGlobPatterns,
++  glob,
++  globSync,
++  loadGitignore,
++} from '../src/index.js'
++
++const sort = <T>(arr: T[]) => [...arr].sort()
++
++t.test('gitignoreToGlobPatterns: unanchored pattern', t => {
++  const pats = gitignoreToGlobPatterns('node_modules', '/proj')
++  // at minimum should include forms matching node_modules at any depth
++  t.ok(pats.includes('node_modules'), 'bare stem included')
++  t.ok(pats.includes('**/node_modules'), 'star-prefixed stem included')
++  t.ok(pats.includes('/proj/node_modules'), 'base-prefixed stem included')
++  t.ok(pats.some(p => p.endsWith('/**')), 'has /** descendant form')
++  t.end()
++})
++
++t.test('gitignoreToGlobPatterns: anchored pattern', t => {
++  const pats = gitignoreToGlobPatterns('/build', '/proj')
++  t.ok(pats.includes('/proj/build'), 'anchored to base')
++  t.ok(pats.includes('/proj/build/**'), 'anchored descendant form')
++  t.notOk(pats.includes('**/build'), 'no anywhere form when anchored')
++  t.end()
++})
++
++t.test('gitignoreToGlobPatterns: middle-slash = anchored', t => {
++  const pats = gitignoreToGlobPatterns('foo/bar', '/proj')
++  t.ok(pats.includes('/proj/foo/bar'), 'middle slash anchors to base')
++  t.ok(pats.includes('/proj/foo/bar/**'))
++  t.end()
++})
++
++t.test('gitignoreToGlobPatterns: dir-only pattern', t => {
++  const pats = gitignoreToGlobPatterns('dist/', '/proj')
++  // pattern should have been stripped of trailing slash but still produce
++  // entries matching the directory and its descendants.
++  t.ok(pats.includes('/proj/dist') || pats.includes('**/dist'))
++  t.ok(pats.some(p => p.endsWith('/dist/**')))
++  t.end()
++})
++
++t.test('gitignoreToGlobPatterns: empty/blank after trimming', t => {
++  t.strictSame(gitignoreToGlobPatterns('   ', '/proj'), [])
++  // escaped leading space is meaningful — not trimmed in the real loader
++  // because only *trailing* unescaped spaces are stripped.
++  t.not(gitignoreToGlobPatterns('a', '/proj').length, 0)
++  t.end()
++})
++
++t.test('loadGitignore: reads a file and produces patterns', t => {
++  const cwd = t.testdir({
++    '.gitignore': [
++      '# a comment',
++      'node_modules',
++      'build/',
++      '*.log',
++      '!/important.log',
++      '',
++      '/dist',
++    ].join('\n'),
++    node_modules: { x: '' },
++    build: { out: '' },
++    dist: { out: '' },
++    a: {
++      'ignore.log': '',
++      'keep.txt': '',
++    },
++  })
++
++  const gi = loadGitignore({ gitignore: true, cwd })
++  t.ok(gi.length > 0, 'produced some patterns')
++  // negations are currently not enforced here, but the patterns themselves
++  // should not start with `!`
++  t.ok(gi.every(p => !p.startsWith('!')), 'no negation patterns present')
++
++  // .log files, dist, build, node_modules covered
++  t.ok(gi.some(p => p.endsWith('/*.log') || p.endsWith('/**/*.log') ||
++      p.includes('*.log')), 'wildcard present')
++
++  t.end()
++})
++
++t.test('loadGitignore: returns [] when no gitignore and not true', t => {
++  const cwd = t.testdir({ a: '' })
++  t.strictSame(loadGitignore({ cwd }), [])
++  t.strictSame(loadGitignore({ gitignore: false, cwd }), [])
++  t.strictSame(loadGitignore({ gitignore: true, cwd }), [])
++  t.end()
++})
++
++t.test('glob: gitignore option prunes matches', async t => {
++  const cwd = t.testdir({
++    '.gitignore': [
++      'ignored.txt',
++      'build/',
++      '*.log',
++    ].join('\n'),
++    'ignored.txt': '',
++    'kept.txt': '',
++    'debug.log': '',
++    build: {
++      out: '',
++      'deep.log': '',
++    },
++    src: {
++      'ignored.txt': '',
++      'main.js': '',
++    },
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = { cwd, posix: true }
++
++  // baseline: without gitignore, all entries show up
++  const baseline = sort(globSync(pattern, opts))
++  t.ok(baseline.includes('ignored.txt'), 'baseline includes ignored.txt')
++  t.ok(baseline.includes('build/out'), 'baseline includes build/out')
++  t.ok(baseline.includes('debug.log'), 'baseline includes debug.log')
++
++  // with gitignore:true, the ignored paths should be absent
++  const sync = sort(globSync(pattern, { ...opts, gitignore: true }))
++  const async_ = sort(await glob(pattern, { ...opts, gitignore: true }))
++
++  t.notOk(sync.includes('ignored.txt'), 'ignored.txt filtered')
++  t.notOk(sync.includes('src/ignored.txt'), 'src/ignored.txt filtered')
++  t.notOk(sync.includes('build'), 'build directory filtered')
++  t.notOk(sync.includes('build/out'), 'build/out filtered')
++  t.notOk(sync.includes('debug.log'), 'debug.log filtered')
++  t.ok(sync.includes('kept.txt'), 'kept.txt retained')
++  t.ok(sync.includes('src/main.js'), 'src/main.js retained')
++
++  t.strictSame(sync, async_, 'sync and async results match')
++  t.end()
++})
++
++t.test('glob: gitignore option accepts a file path', async t => {
++  const cwd = t.testdir({
++    shared: {
++      'my.gitignore': '*.bak\n',
++    },
++    a: '',
++    'a.bak': '',
++    b: '',
++    'b.bak': '',
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = { cwd, posix: true }
++  const giPath = join(cwd, 'shared', 'my.gitignore')
++
++  const sync = sort(globSync(pattern, { ...opts, gitignore: giPath }))
++  const async_ = sort(await glob(pattern, { ...opts, gitignore: giPath }))
++
++  t.notOk(sync.includes('a.bak'), 'a.bak filtered via custom path')
++  t.notOk(sync.includes('b.bak'), 'b.bak filtered via custom path')
++  t.ok(sync.includes('a'), 'a retained')
++  t.ok(sync.includes('b'), 'b retained')
++  t.strictSame(sync, async_, 'sync and async results match')
++  t.end()
++})
++
++t.test('glob: gitignore merges with, but does not overwrite, ignore', async t => {
++  // gitignore excludes *.log, explicit ignore excludes *.bak
++  const cwd = t.testdir({
++    '.gitignore': '*.log\n',
++    'a.log': '',
++    'a.bak': '',
++    'a.txt': '',
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = {
++    cwd,
++    posix: true,
++    gitignore: true,
++    ignore: '*.bak',
++  }
++
++  const sync = sort(globSync(pattern, opts))
++  const async_ = sort(await glob(pattern, opts))
++
++  t.notOk(sync.includes('a.log'), 'gitignore rule a.log filtered')
++  t.notOk(sync.includes('a.bak'), 'explicit ignore rule a.bak filtered')
++  t.ok(sync.includes('a.txt'), 'a.txt retained')
++  t.strictSame(sync, async_, 'sync and async results match')
++  t.end()
++})
++
++t.test('glob: gitignore merges into array-style ignore too', async t => {
++  const cwd = t.testdir({
++    '.gitignore': '*.log\n',
++    'a.log': '',
++    'a.bak': '',
++    'a.txt': '',
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = {
++    cwd,
++    posix: true,
++    gitignore: true,
++    ignore: ['*.bak', '*.tmp'],
++  }
++
++  const sync = sort(globSync(pattern, opts))
++  t.notOk(sync.includes('a.log'), 'a.log filtered')
++  t.notOk(sync.includes('a.bak'), 'a.bak filtered')
++  t.ok(sync.includes('a.txt'), 'a.txt retained')
++  t.end()
++})
++
++t.test('glob: gitignore merges with IgnoreLike object', async t => {
++  const cwd = t.testdir({
++    '.gitignore': '*.log\n',
++    'a.log': '',
++    'a.bak': '',
++    'a.txt': '',
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = {
++    cwd,
++    posix: true,
++    gitignore: true,
++    ignore: {
++      ignored: p => p.name().endsWith('.bak'),
++      childrenIgnored: () => false,
++    },
++  }
++
++  const sync = sort(globSync(pattern, opts))
++  t.notOk(sync.includes('a.log'), 'a.log filtered via gitignore')
++  t.notOk(sync.includes('a.bak'), 'a.bak filtered via IgnoreLike')
++  t.ok(sync.includes('a.txt'), 'a.txt retained')
++  t.end()
++})
++
++t.test('loadGitignore: missing explicit path yields []', t => {
++  const cwd = t.testdir({})
++  const missing = join(cwd, 'nope', 'not-here.gitignore')
++  t.strictSame(loadGitignore({ gitignore: missing, cwd }), [])
++  t.end()
++})
++
++t.test('loadGitignore: comments and blank lines are skipped', t => {
++  const cwd = t.testdir({
++    '.gitignore': [
++      '# this is a comment',
++      '',
++      '   ',
++      '# another comment',
++      'build',
++    ].join('\n'),
++  })
++  const pats = loadGitignore({ gitignore: true, cwd })
++  // should only see patterns derived from `build`
++  const anyBuild = pats.some(p => p.includes('build'))
++  const anyComment = pats.some(p => p.startsWith('#'))
++  t.ok(anyBuild, 'real pattern loaded')
++  t.notOk(anyComment, 'comments not treated as patterns')
++  t.end()
++})
++
++t.test('loadGitignore: find-up walks to parent', t => {
++  const root = t.testdir({
++    '.gitignore': 'from-root\n',
++    sub: {
++      deeper: {},
++    },
++  })
++
++  const child = join(root, 'sub', 'deeper')
++  const pats = loadGitignore({ gitignore: true, cwd: child })
++  // must find the parent .gitignore and yield a pattern mentioning from-root
++  t.ok(pats.length > 0, 'found patterns')
++  t.ok(
++    pats.some(p => p.includes('from-root')),
++    'parent .gitignore pattern loaded',
++  )
++  t.end()
++})
++
++t.test('glob: gitignore path written inside a dir', async t => {
++  // when the .gitignore sits next to content, anchored patterns are relative
++  // to the gitignore's own directory
++  const cwd = t.testdir({
++    '.gitignore': '/build\n',
++    build: { 'out.txt': '' },
++    sub: {
++      build: { 'still-ignored.txt': '' },
++      keep: '',
++    },
++  })
++
++  const pattern = '**'
++  const opts: GlobOptionsWithFileTypesUnset = {
++    cwd,
++    posix: true,
++    gitignore: true,
++  }
++  const sync = sort(globSync(pattern, opts))
++  // both root-level build and sub/build can be matched by the "anywhere"
++  // forms we emit for the base path, but at minimum the top-level build/
++  // should not appear
++  t.notOk(sync.includes('build'), 'root build excluded')
++  t.notOk(sync.includes('build/out.txt'), 'root build/out.txt excluded')
++  t.ok(sync.includes('sub/keep'), 'unrelated content retained')
++  t.end()
++})
++
++// ensure that when a `.gitignore` is passed with an absolute path we
++// do not need to look anywhere else, even from a nested cwd.
++t.test('glob: gitignore string path works from nested cwd', async t => {
++  const root = t.testdir({
++    project: {
++      'shared.gitignore': '*.secret\n',
++      nested: {},
++    },
++  })
++  const cwd = join(root, 'project', 'nested')
++  writeFileSync(join(cwd, 'keep.txt'), '')
++  writeFileSync(join(cwd, 'oops.secret'), '')
++
++  const gi = join(root, 'project', 'shared.gitignore')
++  const sync = sort(globSync('**', { cwd, posix: true, gitignore: gi }))
++  t.notOk(sync.includes('oops.secret'), 'secret filtered via explicit path')
++  t.ok(sync.includes('keep.txt'), 'keep.txt retained')
++  t.end()
++})

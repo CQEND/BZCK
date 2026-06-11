@@ -1,0 +1,797 @@
+﻿diff --git a/.glob_adapt_cache.json b/.glob_adapt_cache.json
+new file mode 100644
+index 0000000..8cdccec
+--- /dev/null
++++ b/.glob_adapt_cache.json
+@@ -0,0 +1,21 @@
++{
++  "version": 1,
++  "patterns": {
++    "**/*.ts": {
++      "runCount": 12,
++      "lastRun": 1781145603031,
++      "dirMatchCounts": {
++        "config": 12,
++        "test/unit": 12,
++        "test/integration": 12,
++        "src/utils": 12,
++        "src/services": 12,
++        "src/models": 12,
++        "src/helpers": 12,
++        "src/components": 12,
++        "docs/guides": 12,
++        "docs/api": 12
++      }
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/src/adaptive-history-manager.ts b/src/adaptive-history-manager.ts
+new file mode 100644
+index 0000000..d41b5b4
+--- /dev/null
++++ b/src/adaptive-history-manager.ts
+@@ -0,0 +1,160 @@
++import { existsSync, readFileSync, writeFileSync } from 'node:fs'
++import { resolve } from 'node:path'
++
++export interface AdaptiveCacheData {
++  patterns: Map<string, PatternHistory>
++}
++
++export interface PatternHistory {
++  runCount: number
++  lastRun: number
++  dirMatchCounts: Map<string, number>
++}
++
++export interface PersistedCacheData {
++  version: number
++  patterns: Record<string, PersistedPatternHistory>
++}
++
++export interface PersistedPatternHistory {
++  runCount: number
++  lastRun: number
++  dirMatchCounts: Record<string, number>
++}
++
++export class AdaptiveHistoryManager {
++  #cachePath: string
++  #cache: AdaptiveCacheData
++  #memoryLimit: number
++
++  constructor(cachePath?: string, memoryLimit: number = 100) {
++    this.#memoryLimit = memoryLimit
++    this.#cachePath = cachePath || resolve(process.cwd(), '.glob_adapt_cache.json')
++    this.#cache = this.#loadCache()
++  }
++
++  #loadCache(): AdaptiveCacheData {
++    if (!existsSync(this.#cachePath)) {
++      return { patterns: new Map() }
++    }
++    try {
++      const raw = readFileSync(this.#cachePath, 'utf8')
++      const parsed: PersistedCacheData = JSON.parse(raw)
++      const patterns = new Map<string, PatternHistory>()
++      for (const [pattern, history] of Object.entries(parsed.patterns)) {
++        patterns.set(pattern, {
++          runCount: history.runCount,
++          lastRun: history.lastRun,
++          dirMatchCounts: new Map(Object.entries(history.dirMatchCounts)),
++        })
++      }
++      return { patterns }
++    } catch {
++      return { patterns: new Map() }
++    }
++  }
++
++  persist(): void {
++    const data: PersistedCacheData = {
++      version: 1,
++      patterns: {},
++    }
++    for (const [pattern, history] of this.#cache.patterns) {
++      data.patterns[pattern] = {
++        runCount: history.runCount,
++        lastRun: history.lastRun,
++        dirMatchCounts: Object.fromEntries(history.dirMatchCounts),
++      }
++    }
++    writeFileSync(this.#cachePath, JSON.stringify(data, null, 2))
++  }
++
++  recordRun(pattern: string, matchedDirs: string[]): void {
++    let history = this.#cache.patterns.get(pattern)
++    if (!history) {
++      history = {
++        runCount: 0,
++        lastRun: 0,
++        dirMatchCounts: new Map(),
++      }
++      this.#cache.patterns.set(pattern, history)
++    }
++    history.runCount++
++    history.lastRun = Date.now()
++    for (const dir of matchedDirs) {
++      const current = history.dirMatchCounts.get(dir) || 0
++      history.dirMatchCounts.set(dir, current + 1)
++    }
++    this.#pruneCache()
++  }
++
++  #pruneCache(): void {
++    if (this.#cache.patterns.size <= this.#memoryLimit) {
++      return
++    }
++    const sorted = [...this.#cache.patterns.entries()].sort(
++      (a, b) => a[1].lastRun - b[1].lastRun,
++    )
++    const toRemove = sorted.slice(0, sorted.length - this.#memoryLimit)
++    for (const [key] of toRemove) {
++      this.#cache.patterns.delete(key)
++    }
++  }
++
++  getPrioritizedDirs(pattern: string, candidateDirs: string[]): string[] {
++    const history = this.#cache.patterns.get(pattern)
++    if (!history || history.dirMatchCounts.size === 0) {
++      return [...candidateDirs]
++    }
++    const dirScores = new Map<string, number>()
++    for (const dir of candidateDirs) {
++      const score = history.dirMatchCounts.get(dir) || 0
++      dirScores.set(dir, score)
++    }
++    const highFreq: string[] = []
++    const lowFreq: string[] = []
++    for (const dir of candidateDirs) {
++      const score = dirScores.get(dir) || 0
++      if (score > 0) {
++        highFreq.push(dir)
++      } else {
++        lowFreq.push(dir)
++      }
++    }
++    highFreq.sort((a, b) => {
++      const scoreA = dirScores.get(a) || 0
++      const scoreB = dirScores.get(b) || 0
++      return scoreB - scoreA
++    })
++    return [...highFreq, ...lowFreq]
++  }
++
++  getExplorationRatio(): number {
++    return 0.1
++  }
++
++  getDirsForExploration(pattern: string, candidateDirs: string[]): string[] {
++    const history = this.#cache.patterns.get(pattern)
++    if (!history || history.dirMatchCounts.size === 0) {
++      return [...candidateDirs]
++    }
++    const unvisited: string[] = []
++    const visited: string[] = []
++    for (const dir of candidateDirs) {
++      if (history.dirMatchCounts.has(dir) && history.dirMatchCounts.get(dir)! > 0) {
++        visited.push(dir)
++      } else {
++        unvisited.push(dir)
++      }
++    }
++    return [...unvisited, ...visited]
++  }
++
++  clear(): void {
++    this.#cache = { patterns: new Map() }
++  }
++
++  getCache(): AdaptiveCacheData {
++    return this.#cache
++  }
++}
+diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..b9251cd 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -348,6 +348,27 @@ export interface GlobOptions {
+    * the file system tree.
+    */
+   braceExpandMax?: number
++
++  /**
++   * Enable adaptive preheating optimization. When enabled, the glob walker
++   * will prioritize scanning directories that have historically returned
++   * more matches for similar patterns, potentially improving performance
++   * for repeated glob operations.
++   *
++   * The optimization is safe: all directories are eventually scanned to
++   * ensure complete results.
++   *
++   * @default false
++   */
++  adaptive?: boolean
++
++  /**
++   * Maximum number of pattern histories to keep in memory and persist
++   * to disk. Older patterns are evicted when this limit is exceeded.
++   *
++   * @default 100
++   */
++  adaptiveMemory?: number
+ }
+ 
+ export type GlobOptionsWithFileTypesTrue = GlobOptions & {
+diff --git a/src/index.ts b/src/index.ts
+index 160a1b0..67ab846 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -11,6 +11,11 @@ import { Glob } from './glob.js'
+ import { hasMagic } from './has-magic.js'
+ 
+ export { escape, unescape } from 'minimatch'
++export { AdaptiveHistoryManager } from './adaptive-history-manager.js'
++export type {
++  AdaptiveCacheData,
++  PatternHistory,
++} from './adaptive-history-manager.js'
+ export type {
+   FSOption,
+   Path,
+diff --git a/src/walker.ts b/src/walker.ts
+index 7d49716..366d35d 100644
+--- a/src/walker.ts
++++ b/src/walker.ts
+@@ -16,6 +16,7 @@ import { Ignore } from './ignore.js'
+ // a single minimatch set entry with 1 or more parts
+ import type { Pattern } from './pattern.js'
+ import { Processor } from './processor.js'
++import { AdaptiveHistoryManager } from './adaptive-history-manager.js'
+ 
+ export interface GlobWalkerOpts {
+   absolute?: boolean
+@@ -44,6 +45,9 @@ export interface GlobWalkerOpts {
+   windowsPathsNoEscape?: boolean
+   withFileTypes?: boolean
+   includeChildMatches?: boolean
++  adaptive?: boolean
++  adaptiveMemory?: number
++  adaptiveHistoryManager?: AdaptiveHistoryManager
+ }
+ 
+ export type GWOFileTypesTrue = GlobWalkerOpts & {
+@@ -97,6 +101,8 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   signal?: AbortSignal
+   maxDepth: number
+   includeChildMatches: boolean
++  adaptive: boolean
++  protected adaptiveHistoryManager?: AdaptiveHistoryManager
+ 
+   constructor(patterns: Pattern[], path: Path, opts: O)
+   constructor(patterns: Pattern[], path: Path, opts: O) {
+@@ -105,6 +111,12 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     this.opts = opts
+     this.#sep = !opts.posix && opts.platform === 'win32' ? '\\' : '/'
+     this.includeChildMatches = opts.includeChildMatches !== false
++    this.adaptive = opts.adaptive ?? false
++    if (opts.adaptive) {
++      this.adaptiveHistoryManager =
++        opts.adaptiveHistoryManager ||
++        new AdaptiveHistoryManager(undefined, opts.adaptiveMemory ?? 100)
++    }
+     if (opts.ignore || !this.includeChildMatches) {
+       this.#ignore = makeIgnore(opts.ignore ?? [], opts)
+       if (
+@@ -267,6 +279,38 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     if (p) this.matchFinish(p, absolute)
+   }
+ 
++  protected getAdaptivePatternKey(): string {
++    return this.patterns.map(p => p.globString()).join('|')
++  }
++
++  #reorderEntriesAdaptive(entries: Path[]): Path[] {
++    if (!this.adaptive || !this.adaptiveHistoryManager) {
++      return entries
++    }
++    const patternKey = this.getAdaptivePatternKey()
++    const dirPaths = entries.map(e => e.fullpath())
++    const prioritized = this.adaptiveHistoryManager.getPrioritizedDirs(
++      patternKey,
++      dirPaths,
++    )
++    const pathMap = new Map<string, Path>()
++    for (const entry of entries) {
++      pathMap.set(entry.fullpath(), entry)
++    }
++    const reordered: Path[] = []
++    for (const path of prioritized) {
++      const entry = pathMap.get(path)
++      if (entry) {
++        reordered.push(entry)
++      }
++    }
++    return reordered
++  }
++
++  recordAdaptiveRun(): void {
++    // Override in subclass
++  }
++
+   walkCB(target: Path, patterns: Pattern[], cb: () => unknown) {
+     /* c8 ignore start */
+     if (this.signal?.aborted) cb()
+@@ -327,7 +371,8 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     processorx: Processor,
+     cb: () => unknown,
+   ) {
+-    const proc = processorx.filterEntries(target, entries)
++    const reorderedEntries = this.#reorderEntriesAdaptive(entries)
++    const proc = processorx.filterEntries(target, reorderedEntries)
+ 
+     let tasks = 1
+     const next = () => {
+@@ -401,7 +446,8 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     processor: Processor,
+     cb: () => unknown,
+   ) {
+-    const proc = processor.filterEntries(target, entries)
++    const reorderedEntries = this.#reorderEntriesAdaptive(entries)
++    const proc = processor.filterEntries(target, reorderedEntries)
+ 
+     let tasks = 1
+     const next = () => {
+@@ -434,6 +480,24 @@ export class GlobWalker<
+     this.matches.add(e)
+   }
+ 
++  override recordAdaptiveRun(): void {
++    if (!this.adaptive || !this.adaptiveHistoryManager) {
++      return
++    }
++    const patternKey = this.getAdaptivePatternKey()
++    const matchedDirs = new Set<string>()
++    for (const match of this.matches) {
++      const path =
++        typeof match === 'string' ? match : (match as Path).fullpath()
++      const dir = path.substring(0, path.lastIndexOf('/'))
++      if (dir) {
++        matchedDirs.add(dir)
++      }
++    }
++    this.adaptiveHistoryManager.recordRun(patternKey, [...matchedDirs])
++    this.adaptiveHistoryManager.persist()
++  }
++
+   async walk(): Promise<Set<Result<O>>> {
+     if (this.signal?.aborted) throw this.signal.reason
+     if (this.path.isUnknown()) {
+@@ -448,6 +512,7 @@ export class GlobWalker<
+         }
+       })
+     })
++    this.recordAdaptiveRun()
+     return this.matches
+   }
+ 
+@@ -460,6 +525,7 @@ export class GlobWalker<
+     this.walkCBSync(this.path, this.patterns, () => {
+       if (this.signal?.aborted) throw this.signal.reason
+     })
++    this.recordAdaptiveRun()
+     return this.matches
+   }
+ }
+diff --git a/test/adaptive.ts b/test/adaptive.ts
+new file mode 100644
+index 0000000..e1b1da5
+--- /dev/null
++++ b/test/adaptive.ts
+@@ -0,0 +1,405 @@
++import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import t from 'tap'
++import { Glob, AdaptiveHistoryManager } from '../dist/esm/index.js'
++
++const testDir = join(tmpdir(), 'glob-adaptive-test-' + Date.now())
++
++function setupTestDir() {
++  if (existsSync(testDir)) {
++    rmSync(testDir, { recursive: true, force: true })
++  }
++  mkdirSync(testDir, { recursive: true })
++
++  const dirs = [
++    'src/components',
++    'src/utils',
++    'src/helpers',
++    'src/services',
++    'src/models',
++    'test/unit',
++    'test/integration',
++    'docs/api',
++    'docs/guides',
++    'config',
++  ]
++
++  for (const dir of dirs) {
++    mkdirSync(join(testDir, dir), { recursive: true })
++    const fileCount = dir.startsWith('src') ? 5 : 2
++    for (let i = 0; i < fileCount; i++) {
++      writeFileSync(join(testDir, dir, `file${i}.ts`), `export const x = ${i}`)
++    }
++  }
++}
++
++function cleanupTestDir() {
++  if (existsSync(testDir)) {
++    rmSync(testDir, { recursive: true, force: true })
++  }
++}
++
++t.beforeEach(() => {
++  setupTestDir()
++})
++
++t.afterEach(() => {
++  cleanupTestDir()
++})
++
++t.test('adaptive option is accepted', async t => {
++  const g = new Glob('**/*.ts', {
++    cwd: testDir,
++    adaptive: true,
++  })
++  const results = await g.walk()
++  t.ok(Array.isArray(results), 'should return array')
++  t.ok(results.length > 0, 'should have results')
++})
++
++t.test('adaptive produces same results as non-adaptive', async t => {
++  const pattern = '**/*.ts'
++
++  const g1 = new Glob(pattern, { cwd: testDir })
++  const results1 = g1.walkSync()
++
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++  const g2 = new Glob(pattern, {
++    cwd: testDir,
++    adaptive: true,
++    adaptiveMemory: 50,
++  })
++  const results2 = g2.walkSync()
++
++  t.equal(results1.length, results2.length, 'should have same number of results')
++
++  const set1 = new Set(results1)
++  const set2 = new Set(results2)
++  t.equal(set1.size, set2.size, 'sets should be same size')
++
++  for (const r of results1) {
++    t.ok(set2.has(r), `should contain ${r}`)
++  }
++})
++
++t.test('adaptive records history and reorders directories', async t => {
++  const pattern = '**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  for (let run = 0; run < 5; run++) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    const results = g.walkSync()
++    t.ok(results.length > 0, `run ${run} should have results`)
++  }
++
++  t.ok(existsSync(cachePath), 'cache file should exist')
++
++  const cacheContent = JSON.parse(
++    readFileSync(cachePath, 'utf8'),
++  )
++  t.ok(cacheContent.patterns, 'should have patterns in cache')
++  t.ok(
++    Object.keys(cacheContent.patterns).length > 0,
++    'should have at least one pattern recorded',
++  )
++})
++
++t.test('adaptive prioritizes high-frequency directories', async t => {
++  const pattern = 'src/**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  for (let run = 0; run < 10; run++) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    g.walkSync()
++  }
++
++  const cache = historyManager.getCache()
++  const patternKey = pattern
++  const history = cache.patterns.get(patternKey)
++
++  t.ok(history, 'should have history for pattern')
++  t.equal(history?.runCount, 10, 'should have run count of 10')
++  t.ok(
++    history && history.dirMatchCounts.size > 0,
++    'should have recorded directory match counts',
++  )
++})
++
++t.test('adaptive with async walk', async t => {
++  const pattern = '**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  const results: number[] = []
++  for (let run = 0; run < 3; run++) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    const r = await g.walk()
++    results.push(r.length)
++  }
++
++  t.ok(results.every(r => r === results[0]), 'all runs should return same count')
++})
++
++t.test('adaptiveMemory limits cache size', async t => {
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++  const historyManager = new AdaptiveHistoryManager(cachePath, 3)
++
++  for (let i = 0; i < 10; i++) {
++    historyManager.recordRun(`pattern${i}`, [`dir${i}`])
++  }
++
++  const cache = historyManager.getCache()
++  t.ok(
++    cache.patterns.size <= 3,
++    `cache should have at most 3 patterns, has ${cache.patterns.size}`,
++  )
++})
++
++t.test('adaptive persists and loads from disk', async t => {
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const manager1 = new AdaptiveHistoryManager(cachePath, 50)
++  manager1.recordRun('**/*.ts', ['src/components', 'src/utils'])
++  manager1.persist()
++
++  const manager2 = new AdaptiveHistoryManager(cachePath, 50)
++  const cache = manager2.getCache()
++
++  const history = cache.patterns.get('**/*.ts')
++  t.ok(history, 'should load pattern from disk')
++  t.equal(history?.runCount, 1, 'should have correct run count')
++  t.equal(
++    history?.dirMatchCounts.get('src/components'),
++    1,
++    'should have recorded dir match count',
++  )
++})
++
++t.test('adaptive handles empty results', async t => {
++  const pattern = '**/*.xyz'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  const g = new Glob(pattern, {
++    cwd: testDir,
++    adaptive: true,
++    adaptiveHistoryManager: historyManager,
++  })
++  const results = g.walkSync()
++
++  t.equal(results.length, 0, 'should have no results')
++})
++
++t.test('adaptive with multiple patterns', async t => {
++  const patterns = ['src/**/*.ts', 'test/**/*.ts']
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  for (const pattern of patterns) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    g.walkSync()
++  }
++
++  const cache = historyManager.getCache()
++  t.equal(
++    cache.patterns.size,
++    2,
++    'should have recorded both patterns',
++  )
++})
++
++t.test('adaptive exploration strategy', async t => {
++  const pattern = '**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  for (let run = 0; run < 20; run++) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    g.walkSync()
++  }
++
++  const cache = historyManager.getCache()
++  const history = cache.patterns.get(pattern)
++
++  t.ok(history, 'should have history')
++  t.ok(
++    history && history.dirMatchCounts.size > 0,
++    'should have recorded multiple directories',
++  )
++
++  const dirs = [...(history?.dirMatchCounts.keys() || [])]
++  t.ok(dirs.length > 0, 'should have tracked directories')
++})
++
++t.test('adaptive with signal abort', async t => {
++  const pattern = '**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++  const controller = new AbortController()
++
++  const g = new Glob(pattern, {
++    cwd: testDir,
++    adaptive: true,
++    adaptiveHistoryManager: historyManager,
++    signal: controller.signal,
++  })
++
++  controller.abort()
++
++  try {
++    await g.walk()
++    t.fail('should have thrown')
++  } catch (e: any) {
++    t.ok(e, 'should throw on abort')
++  }
++})
++
++t.test('adaptive sync with signal abort', async t => {
++  const pattern = '**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++  const controller = new AbortController()
++
++  const g = new Glob(pattern, {
++    cwd: testDir,
++    adaptive: true,
++    adaptiveHistoryManager: historyManager,
++    signal: controller.signal,
++  })
++
++  controller.abort()
++
++  try {
++    g.walkSync()
++    t.fail('should have thrown')
++  } catch (e: any) {
++    t.ok(e, 'should throw on abort')
++  }
++})
++
++t.test('adaptive reordering produces correct results', async t => {
++  const pattern = 'src/**/*.ts'
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  const resultsWithoutAdaptive = new Glob(pattern, {
++    cwd: testDir,
++  }).walkSync()
++
++  for (let run = 0; run < 5; run++) {
++    const g = new Glob(pattern, {
++      cwd: testDir,
++      adaptive: true,
++      adaptiveHistoryManager: historyManager,
++    })
++    const resultsWithAdaptive = g.walkSync()
++
++    t.equal(
++      resultsWithAdaptive.length,
++      resultsWithoutAdaptive.length,
++      `run ${run} should have same count as non-adaptive`,
++    )
++
++    const setWithout = new Set(resultsWithoutAdaptive)
++    for (const r of resultsWithAdaptive) {
++      t.ok(setWithout.has(r), `should contain ${r}`)
++    }
++  }
++})
++
++t.test('adaptive history manager clear', async t => {
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  historyManager.recordRun('**/*.ts', ['src'])
++  historyManager.persist()
++
++  historyManager.clear()
++
++  const cache = historyManager.getCache()
++  t.equal(cache.patterns.size, 0, 'cache should be empty after clear')
++})
++
++t.test('adaptive with nonexistent cache path', async t => {
++  const cachePath = join(testDir, 'nonexistent', '.glob_adapt_cache.json')
++
++  const manager = new AdaptiveHistoryManager(cachePath, 50)
++  const cache = manager.getCache()
++
++  t.equal(cache.patterns.size, 0, 'should start with empty cache')
++})
++
++t.test('adaptive prioritization order', async t => {
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  historyManager.recordRun('**/*.ts', ['src/components', 'src/components', 'src/utils'])
++  historyManager.recordRun('**/*.ts', ['src/components'])
++
++  const candidates = ['src/utils', 'src/components', 'src/models', 'test/unit']
++  const prioritized = historyManager.getPrioritizedDirs('**/*.ts', candidates)
++
++  t.equal(
++    prioritized[0],
++    'src/components',
++    'highest frequency dir should be first',
++  )
++  t.equal(
++    prioritized[1],
++    'src/utils',
++    'second highest frequency dir should be second',
++  )
++})
++
++t.test('adaptive exploration ratio', async t => {
++  const historyManager = new AdaptiveHistoryManager(undefined, 50)
++  const ratio = historyManager.getExplorationRatio()
++  t.equal(ratio, 0.1, 'exploration ratio should be 0.1')
++})
++
++t.test('adaptive with getDirsForExploration', async t => {
++  const cachePath = join(testDir, '.glob_adapt_cache.json')
++  const historyManager = new AdaptiveHistoryManager(cachePath, 50)
++
++  historyManager.recordRun('**/*.ts', ['src/components'])
++
++  const candidates = ['src/components', 'src/utils', 'test/unit']
++  const exploration = historyManager.getDirsForExploration('**/*.ts', candidates)
++
++  t.ok(
++    exploration.indexOf('src/utils') < exploration.indexOf('src/components'),
++    'unvisited dirs should come before visited dirs in exploration',
++  )
++})

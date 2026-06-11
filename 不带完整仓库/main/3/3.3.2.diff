@@ -1,0 +1,60 @@
+﻿diff --git a/src/has-magic.ts b/src/has-magic.ts
+index 0d93f38..1025f37 100644
+--- a/src/has-magic.ts
++++ b/src/has-magic.ts
+@@ -17,7 +17,18 @@ export const hasMagic = (
+   options: GlobOptions = {},
+ ): boolean => {
+   for (const p of Array.isArray(pattern) ? pattern : [pattern]) {
+-    if (new Minimatch(p, options).hasMagic()) return true
++    const clean = options.windowsPathsNoEscape ? p : p.replace(/\\./g, '_')
++    let magic = false
++
++    if (clean.match(/[?*\[]/)) {
++      magic = true
++    } else if (options.magicalBraces && !options.nobrace && clean.includes('{')) {
++      magic = true
++    } else if (!options.noext && clean.match(/[+@!?*]\(/)) {
++      magic = true
++    }
++
++    if (magic) return true
+   }
+   return false
+ }
+diff --git a/test-magic-2.cjs b/test-magic-2.cjs
+new file mode 100644
+index 0000000..4527c1c
+--- /dev/null
++++ b/test-magic-2.cjs
+@@ -0,0 +1,7 @@
++const { Minimatch } = require('minimatch');
++
++console.log('1.', new Minimatch('\\\\{a,b\\\\}', { magicalBraces: true }).hasMagic());
++console.log('2.', new Minimatch('{a,b}', { magicalBraces: true }).hasMagic());
++console.log('3.', new Minimatch('{a,b}').hasMagic());
++console.log('4.', new Minimatch('\\\\{a,b\\\\}').hasMagic());
++console.log('5.', new Minimatch('a/b/+\\\\*(c|d)').hasMagic());
+diff --git a/test-magic-2.js b/test-magic-2.js
+new file mode 100644
+index 0000000..7868bc8
+--- /dev/null
++++ b/test-magic-2.js
+@@ -0,0 +1,4 @@
++import { Minimatch } from 'minimatch'
++
++console.log('+(b)', new Minimatch('+(b)').hasMagic())
++console.log('+\\a(b)', new Minimatch('+\\a(b)').hasMagic())
+diff --git a/test/has-magic.ts b/test/has-magic.ts
+index 6e7ea01..d6c13dd 100644
+--- a/test/has-magic.ts
++++ b/test/has-magic.ts
+@@ -37,4 +37,8 @@ t.test('detect magic in glob patterns', async t => {
+     glob.hasMagic('{a,b}', { nobrace: true, magicalBraces: true }),
+     'magical braces not magic in {a,b} nobrace:true',
+   )
++  t.notOk(
++    glob.hasMagic('\\{a,b\\}', { magicalBraces: true }),
++    'escaped braces are not magic in \\{a,b\\}',
++  )
+ })

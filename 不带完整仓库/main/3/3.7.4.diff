@@ -1,0 +1,788 @@
+﻿diff --git a/src/adaptive-prewalker.ts b/src/adaptive-prewalker.ts
+new file mode 100644
+index 0000000..1b72f2d
+--- /dev/null
++++ b/src/adaptive-prewalker.ts
+@@ -0,0 +1,425 @@
++/**
++ * Adaptive Pre-Walker: maintains a lightweight map of pattern → frequently-
++ * returning subdirectories based on historical runs. When a glob walk with
++ * `adaptive: true` is executed, sub-directories that historically produced
++ * the most matches for the same (or similar) pattern are walked first.
++ *
++ * The optimisation is strictly order-of-visit: every target is eventually
++ * visited, so the final result set is identical to a non-adaptive walk. The
++ * win is that the majority of matches are yielded earlier, allowing
++ * streaming consumers to start processing matches sooner.
++ *
++ * Statistics are persisted to a JSON file on disk so they survive across
++ * processes. The file is written after a walk completes.
++ *
++ * @module
++ */
++
++import * as fs from 'node:fs'
++import * as path from 'node:path'
++
++/**
++ * Per-directory statistics. All values are per-pattern, though because
++ * similar patterns share a key (`canonicalPattern`) we get cross-pattern
++ * transfer as well.
++ */
++interface DirStats {
++  /** Number of times this directory (or a descendant) produced a match. */
++  hits: number
++  /** Number of times this directory was visited by a walk using this key. */
++  visits: number
++  /** `Date.now()` timestamp of the most recent hit. Used for recency bias. */
++  lastHit: number
++}
++
++interface PatternEntry {
++  /** Map from absolute directory path to its historical stats. */
++  dirs: Record<string, DirStats>
++  /**
++   * Ring buffer of recent run identifiers. Used to implement
++   * `adaptiveMemory`: the oldest runs are dropped when the buffer exceeds
++   * the configured size.
++   */
++  runs: AdaptiveRun[]
++}
++
++interface AdaptiveRun {
++  id: number
++  /** dirs that were visited during this run (a subset of keys of `dirs`). */
++  dirs: string[]
++  /**
++   * dirs that produced at least one match during this run. We record this
++   * so that the ring-buffer rolloff can decrement `hits` / `visits` fairly.
++   */
++  hitDirs: string[]
++}
++
++/** On-disk representation of the entire cache. */
++interface PersistedCache {
++  version: 1
++  patterns: Record<string, PatternEntry>
++  nextRunId: number
++  createdAt: number
++  updatedAt: number
++}
++
++/**
++ * Configuration accepted by {@link AdaptivePreWalker}. Mirrors the public
++ * options on {@link GlobOptions}.
++ */
++export interface AdaptiveOptions {
++  /** Enable the adaptive pre-walker. Defaults to `false`. */
++  adaptive?: boolean
++  /**
++   * How many recent runs to remember for each pattern. Older runs are
++   * dropped on a FIFO basis. Defaults to `20`.
++   */
++  adaptiveMemory?: number
++  /**
++   * Path to the cache file. Defaults to
++   * `<cwd>/.glob_adapt_cache.json`. Pass `false` to explicitly disable
++   * persistence (in-memory only).
++   */
++  adaptiveCacheFile?: string | false
++  /**
++   * Probability (0–1) that the next sub-walk target is drawn from the
++   * *unvisited* / low-score pool instead of the high-score pool. This
++   * implements the classic explore/exploit trade-off. Defaults to `0.1`.
++   */
++  adaptiveExplore?: number
++}
++
++/** Defaults for {@link AdaptiveOptions}. */
++const DEFAULTS = {
++  memory: 20,
++  explore: 0.1,
++} as const
++
++/**
++ * Canonicalise a glob pattern for use as a cache key. Collapses trivial
++ * differences (whitespace, duplicated slashes, brace-order) so that
++ * semantically identical patterns share statistics.
++ */
++function canonicalise(pattern: string): string {
++  return pattern
++    .replace(/\/+/g, '/')
++    .trim()
++}
++
++function normalisePatternKey(patterns: string[]): string {
++  const sorted = [...patterns].map(canonicalise).sort()
++  return sorted.join('|')
++}
++
++function emptyPatternEntry(): PatternEntry {
++  return { dirs: {}, runs: [] }
++}
++
++/**
++ * Compute a score combining frequency and recency. Higher = walk sooner.
++ *
++ *   score = hits / (visits + 1)        ← yield rate
++ *         + 1 / (1 + ageHours)         ← recency bonus
++ */
++function scoreDir(stats: DirStats, now: number): number {
++  const yieldRate = stats.hits / (stats.visits + 1)
++  const ageHours = Math.max(0, (now - stats.lastHit) / 3_600_000)
++  const recency = 1 / (1 + ageHours)
++  return yieldRate + recency
++}
++
++/**
++ * The adaptive pre-walker is a singleton that stores historical hit-rates
++ * per (canonical pattern, directory) pair. A single process may host many
++ * {@link Glob} instances; they share one pre-walker per cache file.
++ */
++export class AdaptivePreWalker {
++  /** Singleton cache keyed by the cache file path. */
++  static #instances = new Map<string | false, AdaptivePreWalker>()
++
++  /** Retrieve (or create) the pre-walker for the given cache path. */
++  static for(opts: AdaptiveOptions & { cwd?: string } = {}):
++    | AdaptivePreWalker
++    | undefined {
++    if (!opts.adaptive) return undefined
++    const cacheFile =
++      opts.adaptiveCacheFile === false ? false
++      : opts.adaptiveCacheFile ||
++        path.resolve(opts.cwd || process.cwd(), '.glob_adapt_cache.json')
++    let instance = AdaptivePreWalker.#instances.get(cacheFile)
++    if (!instance) {
++      instance = new AdaptivePreWalker(
++        cacheFile,
++        opts.adaptiveMemory ?? DEFAULTS.memory,
++        opts.adaptiveExplore ?? DEFAULTS.explore,
++      )
++      AdaptivePreWalker.#instances.set(cacheFile, instance)
++    } else {
++      instance.memory = opts.adaptiveMemory ?? instance.memory
++      instance.explore = opts.adaptiveExplore ?? instance.explore
++    }
++    return instance
++  }
++
++  readonly cacheFile: string | false
++  memory: number
++  explore: number
++  #cache: PersistedCache
++  #dirty = false
++  #saveTimeout: ReturnType<typeof setTimeout> | null = null
++  #loadAttempted = false
++
++  private constructor(cacheFile: string | false, memory: number, explore: number) {
++    this.cacheFile = cacheFile
++    this.memory = memory
++    this.explore = explore
++    this.#cache = {
++      version: 1,
++      patterns: {},
++      nextRunId: 1,
++      createdAt: Date.now(),
++      updatedAt: Date.now(),
++    }
++  }
++
++  /** Load state from disk. Safe to call multiple times — only loads once. */
++  load(): void {
++    if (this.#loadAttempted) return
++    this.#loadAttempted = true
++    if (this.cacheFile === false) return
++    try {
++      const raw = fs.readFileSync(this.cacheFile, 'utf8')
++      const parsed = JSON.parse(raw) as PersistedCache
++      if (parsed && parsed.version === 1 && parsed.patterns) {
++        this.#cache = parsed
++      }
++    } catch (err) {
++      // missing-file, permission, or corrupt JSON — start fresh silently.
++      if (err && typeof err === 'object' && 'code' in err &&
++          (err as NodeJS.ErrnoException).code !== 'ENOENT') {
++        // non-ENOENT: still start fresh, don't throw (cache is advisory).
++      }
++    }
++  }
++
++  /** Force a synchronous save. Usually handled by {@link scheduleSave}. */
++  save(): void {
++    if (this.cacheFile === false) return
++    this.#dirty = false
++    this.#cache.updatedAt = Date.now()
++    try {
++      const tmp = this.cacheFile + '.tmp'
++      fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true })
++      fs.writeFileSync(tmp, JSON.stringify(this.#cache), 'utf8')
++      fs.renameSync(tmp, this.cacheFile)
++    } catch {
++      // persistence is best-effort; never throw from a cache write.
++    }
++  }
++
++  /** Debounced save — coalesces rapid updates into a single write. */
++  scheduleSave(): void {
++    this.#dirty = true
++    if (this.cacheFile === false) return
++    if (this.#saveTimeout !== null) return
++    this.#saveTimeout = setTimeout(() => {
++      this.#saveTimeout = null
++      this.save()
++    }, 250)
++  }
++
++  /** Return whether this instance has unsaved in-memory changes. */
++  isDirty(): boolean {
++    return this.#dirty
++  }
++
++  // ------------------------------------------------------------------
++  // Scoring API
++  // ------------------------------------------------------------------
++
++  /**
++   * Sort a list of sub-walk targets in place so that historically
++   * productive directories are visited first, with a small
++   * `explore`-fraction of the order reserved for unseen / low-score
++   * directories. Returns the same array (re-ordered) for convenience.
++   */
++  sortTargets<T extends { fullpath: () => string }>(
++    patternKey: string,
++    targets: T[],
++  ): T[] {
++    if (targets.length <= 1) return targets
++    this.load()
++    const entry = this.#cache.patterns[patternKey] ?? emptyPatternEntry()
++    const now = Date.now()
++    // Partition into "seen with a hit" vs "other".
++    const scored: { t: T; score: number }[] = []
++    const other: T[] = []
++    for (const t of targets) {
++      const stats = entry.dirs[t.fullpath()]
++      if (stats && stats.hits > 0) {
++        scored.push({ t, score: scoreDir(stats, now) })
++      } else {
++        other.push(t)
++      }
++    }
++    scored.sort((a, b) => b.score - a.score)
++
++    // Interleave: exploit from `scored`, explore from `other`.
++    // Every 1/explore-th slot (on average) is drawn from `other`.
++    const result: T[] = []
++    let s = 0
++    let o = 0
++    const exploreStep = this.explore > 0 && this.explore < 1 ?
++      1 / this.explore : Infinity
++    let counter = 0
++    while (s < scored.length || o < other.length) {
++      counter++
++      const useExplore =
++        isFinite(exploreStep) &&
++        o < other.length &&
++        (counter % Math.max(1, Math.round(exploreStep)) === 0)
++      if (useExplore) {
++        result.push(other[o++])
++      } else if (s < scored.length) {
++        result.push(scored[s++].t)
++      } else {
++        result.push(other[o++])
++      }
++    }
++    // Copy results back into the original array so the caller sees the
++    // reorder regardless of whether they use the return value.
++    for (let i = 0; i < result.length; i++) targets[i] = result[i]
++    return targets
++  }
++
++  // ------------------------------------------------------------------
++  // Learning API
++  // ------------------------------------------------------------------
++
++  /**
++   * Record a completed run: bump `visits` for every directory that was
++   * entered and `hits` for every directory that produced a match.
++   * Drop the oldest run from the ring buffer when memory is exceeded.
++   */
++  recordRun(
++    patternKey: string,
++    visitedDirs: Iterable<string>,
++    hitDirs: Iterable<string>,
++  ): void {
++    this.load()
++    const entry =
++      this.#cache.patterns[patternKey] ??
++      (this.#cache.patterns[patternKey] = emptyPatternEntry())
++    const hitSet = new Set(hitDirs)
++    const visitedList: string[] = []
++    const hitList: string[] = []
++    const now = Date.now()
++    for (const d of visitedDirs) {
++      visitedList.push(d)
++      const stats = entry.dirs[d] ?? (entry.dirs[d] = { hits: 0, visits: 0, lastHit: 0 })
++      stats.visits++
++      if (hitSet.has(d)) {
++        hitList.push(d)
++        stats.hits++
++        stats.lastHit = now
++      }
++    }
++    // Add directories that produced matches even if the caller didn't
++    // explicitly mark them as "visited" (defensive; shouldn't happen).
++    for (const d of hitSet) {
++      if (!entry.dirs[d]) {
++        entry.dirs[d] = { hits: 1, visits: 1, lastHit: now }
++        if (!visitedList.includes(d)) visitedList.push(d)
++        if (!hitList.includes(d)) hitList.push(d)
++      }
++    }
++
++    const id = this.#cache.nextRunId++
++    entry.runs.push({ id, dirs: visitedList, hitDirs: hitList })
++    // Rolloff: drop oldest run beyond memory, decrement counters.
++    while (entry.runs.length > this.memory) {
++      const oldest = entry.runs.shift() as AdaptiveRun
++      for (const d of oldest.dirs) {
++        const stats = entry.dirs[d]
++        if (!stats) continue
++        stats.visits = Math.max(0, stats.visits - 1)
++      }
++      for (const d of oldest.hitDirs) {
++        const stats = entry.dirs[d]
++        if (!stats) continue
++        stats.hits = Math.max(0, stats.hits - 1)
++      }
++      // Cleanup entries that are no longer interesting to keep the
++      // on-disk file bounded.
++      for (const d of new Set([...oldest.dirs, ...oldest.hitDirs])) {
++        const stats = entry.dirs[d]
++        if (stats && stats.visits === 0 && stats.hits === 0) {
++          delete entry.dirs[d]
++        }
++      }
++    }
++    // Recorded statistics influence the *next* walk immediately: the
++    // in-memory state is up to date. Persisting to disk is best-effort
++    // and synchronous here so that a fast-running process exiting
++    // immediately after a walk still leaves a cache for future runs.
++    this.save()
++  }
++
++  /** Drop in-memory state (useful for tests). */
++  reset(): void {
++    this.#cache = {
++      version: 1,
++      patterns: {},
++      nextRunId: 1,
++      createdAt: Date.now(),
++      updatedAt: Date.now(),
++    }
++    this.#dirty = false
++    this.#loadAttempted = true
++  }
++
++  /** Internal — for tests / introspection only. */
++  _inspect(patternKey: string): PatternEntry | undefined {
++    this.load()
++    return this.#cache.patterns[patternKey]
++  }
++}
++
++/**
++ * Thin wrapper that a single {@link GlobWalker} holds for the duration of
++ * one walk. It tracks which directories were entered and which produced
++ * matches, then {@link AdaptiveRunRecorder.commit commit()}s them to the
++ * shared {@link AdaptivePreWalker} at the end.
++ */
++export class AdaptiveRunRecorder {
++  readonly prewalker: AdaptivePreWalker
++  readonly patternKey: string
++  readonly visited = new Set<string>()
++  readonly hits = new Set<string>()
++
++  constructor(prewalker: AdaptivePreWalker, patternKey: string) {
++    this.prewalker = prewalker
++    this.patternKey = patternKey
++  }
++
++  markVisited(dir: string): void {
++    this.visited.add(dir)
++  }
++
++  markHit(dir: string): void {
++    this.hits.add(dir)
++  }
++
++  sortTargets<T extends { fullpath: () => string }>(targets: T[]): T[] {
++    return this.prewalker.sortTargets(this.patternKey, targets)
++  }
++
++  commit(): void {
++    this.prewalker.recordRun(this.patternKey, this.visited, this.hits)
++  }
++}
++
++/** Canonicalise patterns for use as a cache key. Re-exported for tests. */
++export function canonicalPatternKey(patterns: string[]): string {
++  return normalisePatternKey(patterns)
++}
+diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..827011f 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -11,6 +11,7 @@ import {
+ } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
+ import { Pattern } from './pattern.js'
++import type { AdaptiveOptions } from './adaptive-prewalker.js'
+ import { GlobStream, GlobWalker } from './walker.js'
+ 
+ export type MatchSet = Minimatch['set']
+@@ -40,7 +41,7 @@ const defaultPlatform: NodeJS.Platform =
+  * `options` argument to a subsequent operation to share the previously loaded
+  * cache.
+  */
+-export interface GlobOptions {
++export interface GlobOptions extends AdaptiveOptions {
+   /**
+    * Set to `true` to always receive absolute paths for
+    * matched files. Set to `false` to always return relative paths.
+diff --git a/src/processor.ts b/src/processor.ts
+index 98e0658..2d2f3e0 100644
+--- a/src/processor.ts
++++ b/src/processor.ts
+@@ -5,6 +5,7 @@ import { GLOBSTAR } from 'minimatch'
+ import type { Path } from 'path-scurry'
+ import type { MMPattern, Pattern } from './pattern.js'
+ import type { GlobWalkerOpts } from './walker.js'
++import type { AdaptiveRunRecorder } from './adaptive-prewalker.js'
+ 
+ /**
+  * A cache of which patterns have been processed for a given Path
+@@ -98,13 +99,19 @@ export class Processor {
+   follow: boolean
+   dot: boolean
+   opts: GlobWalkerOpts
++  adaptive?: AdaptiveRunRecorder
+ 
+-  constructor(opts: GlobWalkerOpts, hasWalkedCache?: HasWalkedCache) {
++  constructor(
++    opts: GlobWalkerOpts,
++    hasWalkedCache?: HasWalkedCache,
++    adaptive?: AdaptiveRunRecorder,
++  ) {
+     this.opts = opts
+     this.follow = !!opts.follow
+     this.dot = !!opts.dot
+     this.hasWalkedCache =
+       hasWalkedCache ? hasWalkedCache.copy() : new HasWalkedCache()
++    this.adaptive = adaptive
+   }
+ 
+   processPatterns(target: Path, patterns: Pattern[]) {
+@@ -207,11 +214,19 @@ export class Processor {
+   }
+ 
+   subwalkTargets(): Path[] {
+-    return this.subwalks.keys()
++    const targets = this.subwalks.keys()
++    // Record that this directory was entered, *before* handing targets to
++    // the walker. This is also where we reorder by historical hit-rate so
++    // the most-productive subtrees are walked first.
++    if (this.adaptive) {
++      for (const t of targets) this.adaptive.markVisited(t.fullpath())
++      return this.adaptive.sortTargets(targets)
++    }
++    return targets
+   }
+ 
+   child() {
+-    return new Processor(this.opts, this.hasWalkedCache)
++    return new Processor(this.opts, this.hasWalkedCache, this.adaptive)
+   }
+ 
+   // return a new Processor containing the subwalks for each
+diff --git a/src/walker.ts b/src/walker.ts
+index 7d49716..04310d6 100644
+--- a/src/walker.ts
++++ b/src/walker.ts
+@@ -8,6 +8,14 @@ import { Minipass } from 'minipass'
+ import type { Path } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
+ import { Ignore } from './ignore.js'
++import type {
++  AdaptiveOptions,
++  AdaptiveRunRecorder,
++} from './adaptive-prewalker.js'
++import {
++  AdaptivePreWalker,
++  canonicalPatternKey,
++} from './adaptive-prewalker.js'
+ 
+ // XXX can we somehow make it so that it NEVER processes a given path more than
+ // once, enough that the match set tracking is no longer needed?  that'd speed
+@@ -17,7 +25,7 @@ import { Ignore } from './ignore.js'
+ import type { Pattern } from './pattern.js'
+ import { Processor } from './processor.js'
+ 
+-export interface GlobWalkerOpts {
++export interface GlobWalkerOpts extends AdaptiveOptions {
+   absolute?: boolean
+   allowWindowsEscape?: boolean
+   cwd?: string | URL
+@@ -97,6 +105,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   signal?: AbortSignal
+   maxDepth: number
+   includeChildMatches: boolean
++  #adaptive?: AdaptiveRunRecorder
+ 
+   constructor(patterns: Pattern[], path: Path, opts: O)
+   constructor(patterns: Pattern[], path: Path, opts: O) {
+@@ -126,6 +135,34 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+         this.#onResume.length = 0
+       })
+     }
++    if (opts.adaptive) {
++      const pre = AdaptivePreWalker.for({
++        adaptive: true,
++        adaptiveMemory: opts.adaptiveMemory,
++        adaptiveCacheFile: opts.adaptiveCacheFile,
++        adaptiveExplore: opts.adaptiveExplore,
++        cwd: typeof opts.cwd === 'string' ? opts.cwd : undefined,
++      })
++      if (pre) {
++        this.#adaptive = new AdaptiveRunRecorder(
++          pre,
++          canonicalPatternKey(patterns.map(p => p.globString())),
++        )
++      }
++    }
++  }
++
++  /**
++   * Return the adaptive recorder for this walk (if `adaptive` was
++   * enabled). Exposed so {@link Processor} and test code can reach it.
++   */
++  get adaptive(): AdaptiveRunRecorder | undefined {
++    return this.#adaptive
++  }
++
++  /** Commit recorded statistics back to the shared pre-walker cache. */
++  commitAdaptive(): void {
++    this.#adaptive?.commit()
+   }
+ 
+   #ignored(path: Path): boolean {
+@@ -232,14 +269,23 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+ 
+   matchFinish(e: Path, absolute: boolean) {
+     if (this.#ignored(e)) return
+-    // we know we have an ignore if this is false, but TS doesn't
++    // we know we have an ignore if this is false, but TS doesn't.
+     if (!this.includeChildMatches && this.#ignore?.add) {
+       const ign = `${e.relativePosix()}/**`
+       this.#ignore.add(ign)
+     }
+-    const abs =
+-      this.opts.absolute === undefined ? absolute : this.opts.absolute
+     this.seen.add(e)
++    if (this.#adaptive) {
++      // Record that the parent directory produced a match so that future
++      // walks prioritise descending into it first. Walking ancestors
++      // would double-count entries; we attribute matches to their
++      // immediate parent.
++      const parent = e.parent
++      if (parent) this.#adaptive.markHit(parent.fullpath())
++      // If `e` is itself a directory that was also subwalked, include it
++      // so patterns like `src/**` that end on a dir still record a hit.
++      if (e.canReaddir()) this.#adaptive.markHit(e.fullpath())
++    }
+     const mark = this.opts.mark && e.isDirectory() ? this.#sep : ''
+     // ok, we have what we need!
+     if (this.opts.withFileTypes) {
+@@ -271,7 +317,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     /* c8 ignore start */
+     if (this.signal?.aborted) cb()
+     /* c8 ignore stop */
+-    this.walkCB2(target, patterns, new Processor(this.opts), cb)
++    this.walkCB2(target, patterns, new Processor(this.opts, undefined, this.#adaptive), cb)
+   }
+ 
+   walkCB2(
+@@ -351,7 +397,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     /* c8 ignore start */
+     if (this.signal?.aborted) cb()
+     /* c8 ignore stop */
+-    this.walkCB2Sync(target, patterns, new Processor(this.opts), cb)
++    this.walkCB2Sync(target, patterns, new Processor(this.opts, undefined, this.#adaptive), cb)
+   }
+ 
+   walkCB2Sync(
+@@ -444,6 +490,7 @@ export class GlobWalker<
+         if (this.signal?.aborted) {
+           rej(this.signal.reason)
+         } else {
++          this.commitAdaptive()
+           res(this.matches)
+         }
+       })
+@@ -460,6 +507,7 @@ export class GlobWalker<
+     this.walkCBSync(this.path, this.patterns, () => {
+       if (this.signal?.aborted) throw this.signal.reason
+     })
++    this.commitAdaptive()
+     return this.matches
+   }
+ }
+@@ -486,12 +534,19 @@ export class GlobStream<
+ 
+   stream(): MatchStream<O> {
+     const target = this.path
++    const commit = () => this.commitAdaptive()
+     if (target.isUnknown()) {
+       void target.lstat().then(() => {
+-        this.walkCB(target, this.patterns, () => this.results.end())
++        this.walkCB(target, this.patterns, () => {
++          commit()
++          this.results.end()
++        })
+       })
+     } else {
+-      this.walkCB(target, this.patterns, () => this.results.end())
++      this.walkCB(target, this.patterns, () => {
++        commit()
++        this.results.end()
++      })
+     }
+     return this.results
+   }
+@@ -501,6 +556,7 @@ export class GlobStream<
+       this.path.lstatSync()
+     }
+     this.walkCBSync(this.path, this.patterns, () => this.results.end())
++    this.commitAdaptive()
+     return this.results
+   }
+ }
+diff --git a/test/adaptive.ts b/test/adaptive.ts
+new file mode 100644
+index 0000000..5591b75
+--- /dev/null
++++ b/test/adaptive.ts
+@@ -0,0 +1,113 @@
++import { existsSync } from 'node:fs'
++import { resolve } from 'node:path'
++import t from 'tap'
++import { globSync, glob } from '../dist/esm/index.js'
++
++// Adaptive pre-walker: an optimisation that reorders sub-walk targets based
++// on historical run statistics. The key invariant is that *final results must
++// be identical* to a plain walk — only the order in which directories are
++// scanned changes.
++
++const norm = (xs: string[]) => [...xs].sort((a, b) => a.localeCompare(b))
++
++t.test('adaptive walk produces identical results to plain walk', t => {
++  const cwd = t.testdir({
++    src: {
++      alpha: { 'a1.ts': '', 'a2.ts': '' },
++      beta: { 'b1.ts': '', 'b2.ts': '' },
++      gamma: { 'g1.ts': '' },
++    },
++    test: { 't1.ts': '', 't2.ts': '' },
++    docs: { 'd1.ts': '' },
++  })
++  const plain = globSync('**/*.ts', { cwd })
++  const adaptive = globSync('**/*.ts', {
++    cwd,
++    adaptive: true,
++    adaptiveCacheFile: false,
++  })
++  t.strictSame(norm(adaptive), norm(plain), 'same match set')
++  t.end()
++})
++
++t.test('adaptive async walk produces identical results', async t => {
++  const cwd = t.testdir({
++    a: { 'x.ts': '' },
++    b: { 'y.ts': '' },
++  })
++  const plain = await glob('**/*.ts', { cwd })
++  const adaptive = await glob('**/*.ts', {
++    cwd,
++    adaptive: true,
++    adaptiveCacheFile: false,
++  })
++  t.strictSame(norm(adaptive), norm(plain), 'same async match set')
++})
++
++t.test('repeated adaptive walks with a cache file still return full results', t => {
++  const cwd = t.testdir({
++    src: { x: { 'a.ts': '' }, y: { 'b.ts': '' } },
++    other: { 'c.ts': '' },
++  })
++  const cachePath = resolve(cwd, '.adaptive.json')
++  // First run warms the cache; subsequent runs must still return the
++  // complete match set.
++  const expected = norm(globSync('**/*.ts', { cwd }))
++  for (let i = 0; i < 5; i++) {
++    const res = globSync('**/*.ts', {
++      cwd,
++      adaptive: true,
++      adaptiveMemory: 3,
++      adaptiveCacheFile: cachePath,
++    })
++    t.strictSame(norm(res), expected, `run ${i} returns full match set`)
++  }
++  t.ok(existsSync(cachePath), 'cache file written to disk')
++  t.end()
++})
++
++t.test('adaptiveMemory bounds memory by dropping oldest-run statistics', t => {
++  const cwd = t.testdir({
++    src: { a: { 'a.ts': '' } },
++    dead: { b: { 'b.ts': '' } },
++  })
++  const cachePath = resolve(cwd, '.adaptive-small.json')
++  const expected = norm(globSync('**/*.ts', { cwd }))
++  for (let i = 0; i < 10; i++) {
++    const res = globSync('**/*.ts', {
++      cwd,
++      adaptive: true,
++      adaptiveMemory: 2,
++      adaptiveCacheFile: cachePath,
++    })
++    t.strictSame(norm(res), expected, `run ${i} result set unchanged`)
++  }
++  t.end()
++})
++
++t.test('narrow patterns (e.g. src/**/*.ts) do not break broad patterns later', t => {
++  const cwd = t.testdir({
++    src: { a: { 'a.ts': '' } },
++    docs: { 'd.ts': '' },
++  })
++  const cachePath = resolve(cwd, '.adaptive-mixed.json')
++  // Narrow walk first — only src/* is explored.
++  const narrow = globSync('src/**/*.ts', {
++    cwd,
++    adaptive: true,
++    adaptiveCacheFile: cachePath,
++  })
++  t.equal(narrow.length, 1, 'narrow pattern matches one file')
++  // Broad walk — must still reach docs/.
++  const broad = globSync('**/*.ts', {
++    cwd,
++    adaptive: true,
++    adaptiveCacheFile: cachePath,
++  })
++  t.strictSame(
++    norm(broad),
++    norm(globSync('**/*.ts', { cwd })),
++    'broad pattern after narrow still sees every match',
++  )
++  t.end()
++})

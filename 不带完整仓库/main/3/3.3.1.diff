@@ -1,0 +1,34 @@
+﻿diff --git a/src/has-magic.ts b/src/has-magic.ts
+index 0d93f38..6cf748d 100644
+--- a/src/has-magic.ts
++++ b/src/has-magic.ts
+@@ -16,8 +16,14 @@ export const hasMagic = (
+   pattern: string | string[],
+   options: GlobOptions = {},
+ ): boolean => {
++  const windowsPathsNoEscape =
++    !!options.windowsPathsNoEscape ||
++    (options as { allowWindowsEscape?: boolean }).allowWindowsEscape === false
++
+   for (const p of Array.isArray(pattern) ? pattern : [pattern]) {
+-    if (new Minimatch(p, options).hasMagic()) return true
++    const unescaped =
++      windowsPathsNoEscape ? p : p.replace(/\\[^/]/g, '')
++    if (new Minimatch(unescaped, options).hasMagic()) return true
+   }
+   return false
+ }
+diff --git a/test/has-magic.ts b/test/has-magic.ts
+index 6e7ea01..47ae5e3 100644
+--- a/test/has-magic.ts
++++ b/test/has-magic.ts
+@@ -37,4 +37,9 @@ t.test('detect magic in glob patterns', async t => {
+     glob.hasMagic('{a,b}', { nobrace: true, magicalBraces: true }),
+     'magical braces not magic in {a,b} nobrace:true',
+   )
++  t.notOk(glob.hasMagic('\\{a,b\\}'), 'escaped braces are not magic')
++  t.notOk(
++    glob.hasMagic('\\{a,b\\}', { magicalBraces: true }),
++    'escaped braces are not magic with magicalBraces:true',
++  )
+ })

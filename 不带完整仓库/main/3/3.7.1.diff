@@ -1,0 +1,890 @@
+﻿diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..be34037 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -16,8 +16,6 @@ import { GlobStream, GlobWalker } from './walker.js'
+ export type MatchSet = Minimatch['set']
+ export type GlobParts = Exclude<Minimatch['globParts'], undefined>
+ 
+-// if no process global, just call it linux.
+-// so we default to case-sensitive, / separators
+ const defaultPlatform: NodeJS.Platform =
+   (
+     typeof process === 'object' &&
+@@ -63,6 +61,22 @@ export interface GlobOptions {
+    */
+   allowWindowsEscape?: boolean
+ 
++  /**
++   * Enable adaptive traversal ordering based on recent runs.
++   *
++   * When enabled, glob prioritizes subdirectories that recently produced
++   * matches for the same or a similar pattern, while still scanning the full
++   * tree to preserve exact result correctness.
++   */
++  adaptive?: boolean
++
++  /**
++   * Number of recent adaptive runs to remember on disk.
++   *
++   * @default 50
++   */
++  adaptiveMemory?: number
++
+   /**
+    * The current working directory in which to search. Defaults to
+    * `process.cwd()`.
+@@ -79,7 +93,7 @@ export interface GlobOptions {
+   dot?: boolean
+ 
+   /**
+-   * Prepend all relative path strings with `./` (or `.\` on Windows).
++   * Prepend all relative path strings with `./` (or `\.\` on Windows).
+    *
+    * Without this option, returned relative paths are "bare", so instead of
+    * returning `'./foo/bar'`, they are returned as `'foo/bar'`.
+@@ -318,15 +332,7 @@ export interface GlobOptions {
+    *
+    * ```ts
+    * const results = await glob([
+-   *   // likely to match first, since it's just a stat
+    *   'a/b/c/d/e/f',
+-   *
+-   *   // this pattern is more complicated! It must to various readdir()
+-   *   // calls and test the results against a regular expression, and that
+-   *   // is certainly going to take a little bit longer.
+-   *   //
+-   *   // So, later on, it encounters a match at 'a/b/c/d/e', but it's too
+-   *   // late to ignore a/b/c/d/e/f, because it's already been emitted.
+    *   'a/[bdf]/?/[a-z]/*',
+    * ], { includeChildMatches: false })
+    * ```
+@@ -352,7 +358,6 @@ export interface GlobOptions {
+ 
+ export type GlobOptionsWithFileTypesTrue = GlobOptions & {
+   withFileTypes: true
+-  // string options not relevant if returning Path objects.
+   absolute?: undefined
+   mark?: undefined
+   posix?: undefined
+@@ -384,6 +389,8 @@ export type FileTypes<Opts> =
+  */
+ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+   absolute?: boolean
++  adaptive: boolean
++  adaptiveMemory: number
+   cwd: string
+   root?: string
+   dot: boolean
+@@ -432,11 +439,12 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+    * again.
+    */
+   constructor(pattern: string | string[], opts: Opts) {
+-    /* c8 ignore start */
+     if (!opts) throw new TypeError('glob options required')
+-    /* c8 ignore stop */
+     this.withFileTypes = !!opts.withFileTypes as FileTypes<Opts>
+     this.signal = opts.signal
++    this.adaptive = !!opts.adaptive
++    this.adaptiveMemory =
++      typeof opts.adaptiveMemory === 'number' ? opts.adaptiveMemory : 50
+     this.follow = !!opts.follow
+     this.dot = !!opts.dot
+     this.dotRelative = !!opts.dotRelative
+@@ -510,10 +518,6 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     }
+     this.nocase = this.scurry.nocase
+ 
+-    // If you do nocase:true on a case-sensitive file system, then
+-    // we need to use regexps instead of strings for non-magic
+-    // path portions, because statting `aBc` won't return results
+-    // for the file `AbC` for example.
+     const nocaseMagicOnly =
+       this.platform === 'darwin' || this.platform === 'win32'
+ 
+@@ -523,7 +527,6 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+       dot: this.dot,
+       matchBase: this.matchBase,
+       nobrace: this.nobrace,
+-      // default nocase based on platform
+       nocase: this.nocase,
+       nocaseMagicOnly,
+       nocomment: true,
+@@ -546,9 +549,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     )
+     this.patterns = matchSet.map((set, i) => {
+       const g = globParts[i]
+-      /* c8 ignore start */
+       if (!g) throw new Error('invalid pattern object')
+-      /* c8 ignore stop */
+       return new Pattern(set, g, 0, this.platform)
+     })
+   }
+@@ -558,10 +559,6 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+    */
+   async walk(): Promise<Results<Opts>>
+   async walk(): Promise<(string | Path)[]> {
+-    // Walkers always return array of Path objects, so we just have to
+-    // coerce them into the right shape.  It will have already called
+-    // realpath() if the option was set to do so, so we know that's cached.
+-    // start out knowing the cwd, at least
+     return [
+       ...(await new GlobWalker(this.patterns, this.scurry.cwd, {
+         ...this.opts,
+diff --git a/src/walker.ts b/src/walker.ts
+index 7d49716..3edfc40 100644
+--- a/src/walker.ts
++++ b/src/walker.ts
+@@ -4,6 +4,8 @@
+  *
+  * @module
+  */
++import { readFileSync, writeFileSync } from 'node:fs'
++import { resolve } from 'node:path'
+ import { Minipass } from 'minipass'
+ import type { Path } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
+@@ -17,9 +19,235 @@ import { Ignore } from './ignore.js'
+ import type { Pattern } from './pattern.js'
+ import { Processor } from './processor.js'
+ 
++const adaptiveCacheVersion = 1
++const adaptiveCacheFile = '.glob_adapt_cache.json'
++const adaptiveDefaultMemory = 50
++const adaptiveExploreInterval = 10
++
++const adaptiveHasMagic = (pattern: string) =>
++  pattern.includes('*') ||
++  pattern.includes('?') ||
++  /[\[\]{}()!+@]/.test(pattern)
++
++type AdaptivePatternRecord = {
++  recent: string[][]
++  runs: number
++  signature: string
++}
++
++type AdaptiveCache = {
++  patterns: Record<string, AdaptivePatternRecord>
++  version: number
++}
++
++type AdaptiveState = {
++  cache: AdaptiveCache
++  cacheFile: string
++  exploring: boolean
++  key: string
++  memory: number
++  recent: Set<string>
++  scores: Map<string, number>
++  signature: string
++}
++
++const adaptiveOrderKey = (patterns: Pattern[]) =>
++  JSON.stringify(patterns.map(pattern => pattern.globString()))
++
++const adaptivePatternSignature = (patterns: Pattern[]) =>
++  patterns
++    .map(pattern => pattern.globString())
++    .sort((a, b) => a.localeCompare(b, 'en'))
++    .map(pattern => {
++      const parts = pattern.split(/[\\/]+/)
++      const prefix: string[] = []
++      for (const part of parts) {
++        if (!part || adaptiveHasMagic(part)) {
++          break
++        }
++        prefix.push(part)
++      }
++      const last = parts.at(-1) ?? ''
++      const ext =
++        last.match(/(\.[^.*+?()[\]{}!@/\\]+)$/)?.[1] ?? ''
++      const shape =
++        pattern.includes('**') ? '**'
++        : adaptiveHasMagic(pattern) ? '*'
++        : '='
++      return `${prefix.join('/')}::${ext}::${shape}`
++    })
++    .join('||')
++
++const adaptiveLoadCache = (cacheFile: string): AdaptiveCache => {
++  try {
++    const parsed = JSON.parse(readFileSync(cacheFile, 'utf8')) as {
++      patterns?: Record<string, AdaptivePatternRecord>
++      version?: number
++    }
++    if (
++      parsed &&
++      parsed.version === adaptiveCacheVersion &&
++      parsed.patterns &&
++      typeof parsed.patterns === 'object'
++    ) {
++      return {
++        patterns: parsed.patterns,
++        version: adaptiveCacheVersion,
++      }
++    }
++  } catch {}
++  return {
++    patterns: {},
++    version: adaptiveCacheVersion,
++  }
++}
++
++const adaptiveRecordScores = (
++  scores: Map<string, number>,
++  record: AdaptivePatternRecord,
++  weight: number,
++) => {
++  for (const dirs of record.recent) {
++    for (const dir of new Set(dirs)) {
++      scores.set(dir, (scores.get(dir) ?? 0) + weight)
++    }
++  }
++}
++
++const adaptiveScores = (
++  cache: AdaptiveCache,
++  key: string,
++  signature: string,
++) => {
++  const scores = new Map<string, number>()
++  const exact = cache.patterns[key]
++  if (exact) {
++    adaptiveRecordScores(scores, exact, 2)
++  }
++  for (const [candidateKey, record] of Object.entries(cache.patterns)) {
++    if (candidateKey === key || record.signature !== signature) {
++      continue
++    }
++    adaptiveRecordScores(scores, record, 1)
++  }
++  return scores
++}
++
++const adaptiveMemory = (memory: number | undefined) =>
++  Math.max(1, memory ?? adaptiveDefaultMemory)
++
++const adaptiveState = (
++  patterns: Pattern[],
++  path: Path,
++  opts: GlobWalkerOpts,
++): AdaptiveState | undefined => {
++  if (!opts.adaptive) {
++    return undefined
++  }
++  const key = adaptiveOrderKey(patterns)
++  const signature = adaptivePatternSignature(patterns)
++  const cacheFile = resolve(path.fullpath(), adaptiveCacheFile)
++  const cache = adaptiveLoadCache(cacheFile)
++  return {
++    cache,
++    cacheFile,
++    exploring:
++      ((cache.patterns[key]?.runs ?? 0) + 1) % adaptiveExploreInterval === 0,
++    key,
++    memory: adaptiveMemory(opts.adaptiveMemory),
++    recent: new Set<string>(),
++    scores: adaptiveScores(cache, key, signature),
++    signature,
++  }
++}
++
++const adaptiveSortEntries = (
++  state: AdaptiveState | undefined,
++  entries: Path[],
++) => {
++  if (!state || entries.length < 2) {
++    return entries
++  }
++  const ranked = entries.map((entry, index) => {
++    const rel = entry.relativePosix()
++    return {
++      entry,
++      index,
++      known: state.scores.has(rel),
++      score: state.scores.get(rel) ?? 0,
++    }
++  })
++  ranked.sort((a, b) => {
++    if (state.exploring) {
++      if (a.known !== b.known) {
++        return a.known ? 1 : -1
++      }
++      if (a.score !== b.score) {
++        return a.score - b.score
++      }
++      return a.index - b.index
++    }
++    if (a.score !== b.score) {
++      return b.score - a.score
++    }
++    if (a.known !== b.known) {
++      return a.known ? -1 : 1
++    }
++    return a.index - b.index
++  })
++  return ranked.map(({ entry }) => entry)
++}
++
++const adaptiveRecordMatch = (
++  state: AdaptiveState | undefined,
++  entry: Path,
++) => {
++  if (!state) {
++    return
++  }
++  const rel = entry.relativePosix()
++  if (!rel || rel === '.') {
++    return
++  }
++  const parts = rel.split('/').filter(part => part)
++  const depth = entry.isDirectory() ? parts.length : parts.length - 1
++  for (let i = 1; i <= depth; i++) {
++    state.recent.add(parts.slice(0, i).join('/'))
++  }
++}
++
++const adaptiveSave = (state: AdaptiveState | undefined) => {
++  if (!state) {
++    return
++  }
++  const record = state.cache.patterns[state.key] ?? {
++    recent: [],
++    runs: 0,
++    signature: state.signature,
++  }
++  record.signature = state.signature
++  record.runs += 1
++  record.recent.push(
++    [...state.recent].sort((a, b) => a.localeCompare(b, 'en')),
++  )
++  if (record.recent.length > state.memory) {
++    record.recent = record.recent.slice(-state.memory)
++  }
++  state.cache.patterns[state.key] = record
++  try {
++    writeFileSync(
++      state.cacheFile,
++      `${JSON.stringify(state.cache, null, 2)}\n`,
++      'utf8',
++    )
++  } catch {}
++}
++
+ export interface GlobWalkerOpts {
+   absolute?: boolean
+   allowWindowsEscape?: boolean
++  adaptive?: boolean
++  adaptiveMemory?: number
+   cwd?: string | URL
+   dot?: boolean
+   dotRelative?: boolean
+@@ -27,8 +255,6 @@ export interface GlobWalkerOpts {
+   ignore?: string | string[] | IgnoreLike
+   mark?: boolean
+   matchBase?: boolean
+-  // Note: maxDepth here means "maximum actual Path.depth()",
+-  // not "maximum depth beyond cwd"
+   maxDepth?: number
+   nobrace?: boolean
+   nocase?: boolean
+@@ -91,6 +317,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   seen: Set<Path> = new Set<Path>()
+   paused: boolean = false
+   aborted: boolean = false
++  #adaptive?: AdaptiveState
+   #onResume: (() => unknown)[] = []
+   #ignore?: IgnoreLike
+   #sep: '\\' | '/'
+@@ -103,6 +330,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     this.patterns = patterns
+     this.path = path
+     this.opts = opts
++    this.#adaptive = adaptiveState(patterns, path, opts)
+     this.#sep = !opts.posix && opts.platform === 'win32' ? '\\' : '/'
+     this.includeChildMatches = opts.includeChildMatches !== false
+     if (opts.ignore || !this.includeChildMatches) {
+@@ -115,11 +343,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+         throw new Error(m)
+       }
+     }
+-    // ignore, always set with maxDepth, but it's optional on the
+-    // GlobOptions type
+-    /* c8 ignore start */
+     this.maxDepth = opts.maxDepth || Infinity
+-    /* c8 ignore stop */
+     if (opts.signal) {
+       this.signal = opts.signal
+       this.signal.addEventListener('abort', () => {
+@@ -135,14 +359,11 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     return !!this.#ignore?.childrenIgnored?.(path)
+   }
+ 
+-  // backpressure mechanism
+   pause() {
+     this.paused = true
+   }
+   resume() {
+-    /* c8 ignore start */
+     if (this.signal?.aborted) return
+-    /* c8 ignore stop */
+     this.paused = false
+     let fn: (() => unknown) | undefined = undefined
+     while (!this.paused && (fn = this.#onResume.shift())) {
+@@ -151,17 +372,13 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   }
+   onResume(fn: () => unknown) {
+     if (this.signal?.aborted) return
+-    /* c8 ignore start */
+     if (!this.paused) {
+       fn()
+     } else {
+-      /* c8 ignore stop */
+       this.#onResume.push(fn)
+     }
+   }
+ 
+-  // do the requisite realpath/stat checking, and return the path
+-  // to add or undefined to filter it out.
+   async matchCheck(
+     inPath: Path,
+     ifDir: boolean,
+@@ -180,11 +397,9 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     const s = needStat ? await e.lstat() : e
+     if (this.opts.follow && this.opts.nodir && s?.isSymbolicLink()) {
+       const target = await s.realpath()
+-      /* c8 ignore start */
+       if (target && (target.isUnknown() || this.opts.stat)) {
+         await target.lstat()
+       }
+-      /* c8 ignore stop */
+     }
+     return this.matchCheckTest(s, ifDir)
+   }
+@@ -232,16 +447,15 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+ 
+   matchFinish(e: Path, absolute: boolean) {
+     if (this.#ignored(e)) return
+-    // we know we have an ignore if this is false, but TS doesn't
+     if (!this.includeChildMatches && this.#ignore?.add) {
+       const ign = `${e.relativePosix()}/**`
+       this.#ignore.add(ign)
+     }
++    adaptiveRecordMatch(this.#adaptive, e)
+     const abs =
+       this.opts.absolute === undefined ? absolute : this.opts.absolute
+     this.seen.add(e)
+     const mark = this.opts.mark && e.isDirectory() ? this.#sep : ''
+-    // ok, we have what we need!
+     if (this.opts.withFileTypes) {
+       this.matchEmit(e)
+     } else if (abs) {
+@@ -268,9 +482,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   }
+ 
+   walkCB(target: Path, patterns: Pattern[], cb: () => unknown) {
+-    /* c8 ignore start */
+     if (this.signal?.aborted) cb()
+-    /* c8 ignore stop */
+     this.walkCB2(target, patterns, new Processor(this.opts), cb)
+   }
+ 
+@@ -288,9 +500,6 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     }
+     processor.processPatterns(target, patterns)
+ 
+-    // done processing.  all of the above is sync, can be abstracted out.
+-    // subwalks is a map of paths to the entry filters they need
+-    // matches is a map of paths to [absolute, ifDir] tuples.
+     let tasks = 1
+     const next = () => {
+       if (--tasks === 0) cb()
+@@ -308,9 +517,9 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+       }
+       tasks++
+       const childrenCached = t.readdirCached()
+-      if (t.calledReaddir())
++      if (t.calledReaddir()) {
+         this.walkCB3(t, childrenCached, processor, next)
+-      else {
++      } else {
+         t.readdirCB(
+           (_, entries) => this.walkCB3(t, entries, processor, next),
+           true,
+@@ -327,7 +536,10 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     processorx: Processor,
+     cb: () => unknown,
+   ) {
+-    const proc = processorx.filterEntries(target, entries)
++    const proc = processorx.filterEntries(
++      target,
++      adaptiveSortEntries(this.#adaptive, entries),
++    )
+ 
+     let tasks = 1
+     const next = () => {
+@@ -348,9 +560,7 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+   }
+ 
+   walkCBSync(target: Path, patterns: Pattern[], cb: () => unknown) {
+-    /* c8 ignore start */
+     if (this.signal?.aborted) cb()
+-    /* c8 ignore stop */
+     this.walkCB2Sync(target, patterns, new Processor(this.opts), cb)
+   }
+ 
+@@ -370,9 +580,6 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     }
+     processor.processPatterns(target, patterns)
+ 
+-    // done processing.  all of the above is sync, can be abstracted out.
+-    // subwalks is a map of paths to the entry filters they need
+-    // matches is a map of paths to [absolute, ifDir] tuples.
+     let tasks = 1
+     const next = () => {
+       if (--tasks === 0) cb()
+@@ -401,7 +608,10 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+     processor: Processor,
+     cb: () => unknown,
+   ) {
+-    const proc = processor.filterEntries(target, entries)
++    const proc = processor.filterEntries(
++      target,
++      adaptiveSortEntries(this.#adaptive, entries),
++    )
+ 
+     let tasks = 1
+     const next = () => {
+@@ -419,6 +629,12 @@ export abstract class GlobUtil<O extends GlobWalkerOpts = GlobWalkerOpts> {
+ 
+     next()
+   }
++
++  finish() {
++    if (!this.signal?.aborted) {
++      adaptiveSave(this.#adaptive)
++    }
++  }
+ }
+ 
+ export class GlobWalker<
+@@ -444,6 +660,7 @@ export class GlobWalker<
+         if (this.signal?.aborted) {
+           rej(this.signal.reason)
+         } else {
++          this.finish()
+           res(this.matches)
+         }
+       })
+@@ -456,10 +673,10 @@ export class GlobWalker<
+     if (this.path.isUnknown()) {
+       this.path.lstatSync()
+     }
+-    // nothing for the callback to do, because this never pauses
+     this.walkCBSync(this.path, this.patterns, () => {
+       if (this.signal?.aborted) throw this.signal.reason
+     })
++    this.finish()
+     return this.matches
+   }
+ }
+@@ -488,10 +705,16 @@ export class GlobStream<
+     const target = this.path
+     if (target.isUnknown()) {
+       void target.lstat().then(() => {
+-        this.walkCB(target, this.patterns, () => this.results.end())
++        this.walkCB(target, this.patterns, () => {
++          this.finish()
++          this.results.end()
++        })
+       })
+     } else {
+-      this.walkCB(target, this.patterns, () => this.results.end())
++      this.walkCB(target, this.patterns, () => {
++        this.finish()
++        this.results.end()
++      })
+     }
+     return this.results
+   }
+@@ -500,7 +723,10 @@ export class GlobStream<
+     if (this.path.isUnknown()) {
+       this.path.lstatSync()
+     }
+-    this.walkCBSync(this.path, this.patterns, () => this.results.end())
++    this.walkCBSync(this.path, this.patterns, () => {
++      this.finish()
++      this.results.end()
++    })
+     return this.results
+   }
+ }
+diff --git a/test/adaptive.ts b/test/adaptive.ts
+new file mode 100644
+index 0000000..be03b67
+--- /dev/null
++++ b/test/adaptive.ts
+@@ -0,0 +1,262 @@
++import type { Dirent } from 'node:fs'
++import { readFileSync, readdir, readdirSync } from 'node:fs'
++import { join } from 'node:path'
++import { performance } from 'node:perf_hooks'
++import t from 'tap'
++import { glob, globStream, globSync } from '../dist/esm/index.js'
++import type { GlobOptions } from '../src/glob.js'
++
++type AdaptiveCacheShape = {
++  patterns: Record<
++    string,
++    {
++      recent: string[][]
++      runs: number
++      signature: string
++    }
++  >
++  version: number
++}
++
++type ReaddirEntry = string | Buffer | Dirent<string> | Dirent<Buffer>
++
++type GlobCallOptions = Exclude<Parameters<typeof glob>[1], undefined>
++type GlobStreamOptions = Exclude<Parameters<typeof globStream>[1], undefined>
++
++const entryName = (entry: ReaddirEntry) =>
++  typeof entry === 'string' ? entry
++  : Buffer.isBuffer(entry) ? entry.toString('utf8')
++  : Buffer.isBuffer(entry.name) ? entry.name.toString('utf8')
++  : entry.name
++
++const sortEntries = <T extends ReaddirEntry>(entries: T[]) =>
++  [...entries].sort((a, b) => entryName(a).localeCompare(entryName(b), 'en'))
++
++const makeQueuedFs = () => {
++  const queue: (() => void)[] = []
++  let busy = false
++
++  const next = () => {
++    const job = queue.shift()
++    if (!job) {
++      busy = false
++      return
++    }
++    busy = true
++    job()
++  }
++
++  const schedule = (job: () => void) => {
++    queue.push(job)
++    if (!busy) {
++      next()
++    }
++  }
++
++  const delayFor = (path: string) =>
++    path.includes('/hot') ? 5
++    : path.includes('/cold-') ? 40
++    : 1
++
++  const queuedReaddir = ((
++    path: Parameters<typeof readdir>[0],
++    options: Parameters<typeof readdir>[1],
++    callback: Parameters<typeof readdir>[2],
++  ) => {
++    schedule(() => {
++      setTimeout(() => {
++        readdir(path, options, (error, entries) => {
++          const done = callback as (
++            error: NodeJS.ErrnoException | null,
++            entries: unknown,
++          ) => void
++          done(
++            error,
++            Array.isArray(entries) ? sortEntries(entries as ReaddirEntry[]) : entries,
++          )
++          next()
++        })
++      }, delayFor(String(path)))
++    })
++  }) as typeof readdir
++
++  const queuedReaddirSync = ((
++    path: Parameters<typeof readdirSync>[0],
++    options?: Parameters<typeof readdirSync>[1],
++  ) => {
++    const entries =
++      options === undefined ? readdirSync(path) : readdirSync(path, options)
++    return Array.isArray(entries) ? sortEntries(entries as ReaddirEntry[]) : entries
++  }) as typeof readdirSync
++
++  return {
++    readdir: queuedReaddir,
++    readdirSync: queuedReaddirSync,
++  } satisfies NonNullable<GlobOptions['fs']>
++}
++
++const adaptiveOptions = (cwd: string, overrides: Partial<GlobOptions> = {}) =>
++  ({
++    adaptive: true,
++    adaptiveMemory: 4,
++    cwd,
++    posix: true,
++    ...overrides,
++  }) as unknown as GlobCallOptions
++
++const adaptiveStreamOptions = (
++  cwd: string,
++  overrides: Partial<GlobOptions> = {},
++) =>
++  ({
++    adaptive: true,
++    adaptiveMemory: 4,
++    cwd,
++    fs: makeQueuedFs(),
++    posix: true,
++    ...overrides,
++  }) as unknown as GlobStreamOptions
++
++const firstResultTime = async (
++  cwd: string,
++  pattern: string,
++  options: Partial<GlobOptions> = {},
++) => {
++  const started = performance.now()
++  const stream = globStream(pattern, adaptiveStreamOptions(cwd, options))
++  const first = new Promise<number>((resolve, reject) => {
++    stream.once('data', () => resolve(performance.now() - started))
++    stream.once('error', reject)
++    stream.once('end', () => reject(new Error('stream ended without data')))
++  })
++  const allPromise = stream.collect()
++  return {
++    first: await first,
++    results: ((await allPromise) as string[]).sort((a, b) =>
++      a.localeCompare(b, 'en'),
++    ),
++  }
++}
++
++t.test('adaptive cache persists and keeps results identical', async t => {
++  const cwd = t.testdir({
++    src: {
++      hot: {
++        'entry-a.ts': '',
++        nested: {
++          'entry-b.ts': '',
++        },
++      },
++      'cold-a': {
++        noop: {
++          'entry-a.js': '',
++        },
++      },
++      'cold-b': {
++        noop: {
++          'entry-b.js': '',
++        },
++      },
++    },
++  })
++
++  const pattern = 'src/**/*.ts'
++  const expected = ['src/hot/entry-a.ts', 'src/hot/nested/entry-b.ts']
++
++  t.strictSame(
++    globSync(pattern, { cwd, posix: true }).sort((a, b) =>
++      a.localeCompare(b, 'en'),
++    ),
++    expected,
++  )
++
++  t.strictSame(
++    (await glob(pattern, adaptiveOptions(cwd, { adaptiveMemory: 2 })) as string[]).sort(
++      (a, b) => a.localeCompare(b, 'en'),
++    ),
++    expected,
++  )
++
++  const cache = JSON.parse(
++    readFileSync(join(cwd, '.glob_adapt_cache.json'), 'utf8'),
++  ) as AdaptiveCacheShape
++
++  t.equal(cache.version, 1)
++  t.equal(Object.keys(cache.patterns).length, 1)
++  t.match(
++    Object.values(cache.patterns)[0],
++    {
++      recent: [['src', 'src/hot', 'src/hot/nested']],
++      runs: 1,
++    },
++  )
++
++  t.strictSame(
++    (await glob(pattern, adaptiveOptions(cwd, { adaptiveMemory: 2 })) as string[]).sort(
++      (a, b) => a.localeCompare(b, 'en'),
++    ),
++    expected,
++  )
++  t.strictSame(
++    (await glob(pattern, adaptiveOptions(cwd, { adaptiveMemory: 2 })) as string[]).sort(
++      (a, b) => a.localeCompare(b, 'en'),
++    ),
++    expected,
++  )
++
++  const updated = JSON.parse(
++    readFileSync(join(cwd, '.glob_adapt_cache.json'), 'utf8'),
++  ) as AdaptiveCacheShape
++  const entry = Object.values(updated.patterns)[0]
++  t.equal(entry?.runs, 3)
++  t.equal(entry?.recent.length, 2)
++})
++
++t.test('adaptive ordering speeds up repeated and similar patterns', async t => {
++  const cwd = t.testdir({
++    src: {
++      'cold-a': {
++        nope: {
++          'a.js': '',
++        },
++      },
++      'cold-b': {
++        nope: {
++          'b.js': '',
++        },
++      },
++      'cold-c': {
++        nope: {
++          'c.js': '',
++        },
++      },
++      hot: {
++        'entry-a.ts': '',
++        deep: {
++          'entry-b.ts': '',
++        },
++      },
++    },
++  })
++
++  const repeatedPattern = 'src/**/*.ts'
++  const similarPattern = 'src/**/entry-*.ts'
++  const expected = ['src/hot/deep/entry-b.ts', 'src/hot/entry-a.ts']
++
++  const firstRun = await firstResultTime(cwd, repeatedPattern)
++  t.strictSame(firstRun.results, expected)
++
++  const secondRun = await firstResultTime(cwd, repeatedPattern)
++  t.strictSame(secondRun.results, expected)
++  t.ok(
++    firstRun.first > secondRun.first + 60,
++    `expected repeat speedup, saw ${firstRun.first}ms -> ${secondRun.first}ms`,
++  )
++
++  const similarRun = await firstResultTime(cwd, similarPattern)
++  t.strictSame(similarRun.results, expected)
++  t.ok(
++    similarRun.first < firstRun.first - 60,
++    `expected similar-pattern reuse, saw ${firstRun.first}ms -> ${similarRun.first}ms`,
++  )
++})

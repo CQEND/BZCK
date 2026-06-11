@@ -1,0 +1,326 @@
+﻿diff --git a/src/glob.ts b/src/glob.ts
+index 49898fd..f229106 100644
+--- a/src/glob.ts
++++ b/src/glob.ts
+@@ -10,6 +10,7 @@ import {
+   PathScurryWin32,
+ } from 'path-scurry'
+ import type { IgnoreLike } from './ignore.js'
++import { loadGitignoreSync } from './ignore.js'
+ import { Pattern } from './pattern.js'
+ import { GlobStream, GlobWalker } from './walker.js'
+ 
+@@ -41,6 +42,16 @@ const defaultPlatform: NodeJS.Platform =
+  * cache.
+  */
+ export interface GlobOptions {
++  /**
++   * If true, automatically find the nearest `.gitignore` file from the
++   * current working directory and load its rules. If a string, use it as
++   * the path to a `.gitignore` file.
++   *
++   * Loaded rules are merged with the {@link ignore} option, and do not
++   * override any user-supplied ignore patterns.
++   */
++  gitignore?: boolean | string
++
+   /**
+    * Set to `true` to always receive absolute paths for
+    * matched files. Set to `false` to always return relative paths.
+@@ -389,6 +400,7 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+   dot: boolean
+   dotRelative: boolean
+   follow: boolean
++  gitignore?: boolean | string
+   ignore?: string | string[] | IgnoreLike
+   magicalBraces: boolean
+   mark?: boolean
+@@ -461,8 +473,26 @@ export class Glob<Opts extends GlobOptions> implements GlobOptions {
+     this.maxDepth =
+       typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity
+     this.stat = !!opts.stat
++    this.gitignore = opts.gitignore
+     this.ignore = opts.ignore
+ 
++    if (opts.gitignore) {
++      const giPatterns = loadGitignoreSync(opts.gitignore, this.cwd)
++      if (giPatterns.length) {
++        const userIgnore = this.ignore
++        if (typeof userIgnore === 'string') {
++          this.ignore = [userIgnore, ...giPatterns]
++        } else if (Array.isArray(userIgnore)) {
++          this.ignore = [...userIgnore, ...giPatterns]
++        } else if (userIgnore && typeof userIgnore.add === 'function') {
++          for (const p of giPatterns) userIgnore.add(p)
++        } else {
++          this.ignore = giPatterns
++        }
++        opts.ignore = this.ignore
++      }
++    }
++
+     if (this.withFileTypes && this.absolute !== undefined) {
+       throw new Error('cannot set absolute and withFileTypes:true')
+     }
+diff --git a/src/ignore.ts b/src/ignore.ts
+index 9fad545..1133daf 100644
+--- a/src/ignore.ts
++++ b/src/ignore.ts
+@@ -3,6 +3,9 @@
+ // Ignoring a path ignores its children if the pattern ends in /**
+ // Ignores are always parsed in dot:true mode
+ 
++import { existsSync, readFileSync } from 'node:fs'
++import { readFile } from 'node:fs/promises'
++import { dirname, resolve } from 'node:path'
+ import type { MinimatchOptions } from 'minimatch'
+ import { Minimatch } from 'minimatch'
+ import type { Path } from 'path-scurry'
+@@ -131,3 +134,65 @@ export class Ignore implements IgnoreLike {
+     return false
+   }
+ }
++
++export function parseGitignore(content: string): string[] {
++  const patterns: string[] = []
++  for (let line of content.split(/\r?\n/)) {
++    line = line.trim()
++    if (!line || line[0] === '#') continue
++    if (line[0] === '!') continue
++    if (line.endsWith('/')) {
++      const dirPattern = line.slice(0, -1)
++      patterns.push(dirPattern, `${dirPattern}/**`)
++    } else {
++      patterns.push(line)
++    }
++  }
++  return patterns
++}
++
++export function loadGitignoreSync(
++  gitignore: boolean | string,
++  cwd: string,
++): string[] {
++  let giPath: string | undefined
++  if (typeof gitignore === 'string') {
++    giPath = resolve(cwd, gitignore)
++  } else {
++    giPath = findGitignore(cwd)
++    if (!giPath) return []
++  }
++  if (!existsSync(giPath)) return []
++  return parseGitignore(readFileSync(giPath, 'utf8'))
++}
++
++export async function loadGitignore(
++  gitignore: boolean | string,
++  cwd: string,
++): Promise<string[]> {
++  const giPath =
++    typeof gitignore === 'string' ?
++      resolve(cwd, gitignore)
++    : findGitignore(cwd)
++  if (!giPath) return []
++  try {
++    const content = await readFile(giPath, 'utf8')
++    return parseGitignore(content)
++  } catch {
++    return []
++  }
++}
++
++function findGitignore(cwd: string): string | undefined {
++  let dir = resolve(cwd)
++  let prev: string | undefined
++  while (prev !== dir) {
++    const candidate = resolve(dir, '.gitignore')
++    if (existsSync(candidate)) return candidate
++    prev = dir
++    dir = dirname(dir)
++  }
++  return existsSync(resolve(dir, '.gitignore')) ?
++      resolve(dir, '.gitignore')
++    : undefined
++}
+diff --git a/src/index.ts b/src/index.ts
+index 160a1b0..4fc1ed9 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -26,7 +26,7 @@ export type {
+   GlobOptionsWithFileTypesUnset,
+ } from './glob.js'
+ export { hasMagic } from './has-magic.js'
+-export { Ignore } from './ignore.js'
++export { Ignore, loadGitignore, loadGitignoreSync, parseGitignore } from './ignore.js'
+ export type { IgnoreLike } from './ignore.js'
+ export type { MatchStream } from './walker.js'
+ 
+diff --git a/test/gitignore.ts b/test/gitignore.ts
+new file mode 100644
+index 0000000..9140442
+--- /dev/null
++++ b/test/gitignore.ts
+@@ -0,0 +1,162 @@
++import { mkdir, rm, writeFile } from 'node:fs/promises'
++import { resolve } from 'node:path'
++import { fileURLToPath } from 'node:url'
++import t from 'tap'
++import { glob, globSync } from '../dist/esm/index.js'
++
++const __dirname = fileURLToPath(new URL('.', import.meta.url))
++const j = (a: string[]) =>
++  a
++    .map(s => s.replace(/\\/g, '/'))
++    .sort((a, b) => a.localeCompare(b, 'en'))
++
++const tmpBase = resolve(__dirname, 'fixtures', 'gitignore-test')
++
++async function setup(files: Record<string, string>) {
++  await rm(tmpBase, { recursive: true, force: true })
++  await mkdir(tmpBase, { recursive: true })
++  for (const [name, content] of Object.entries(files)) {
++    const fullPath = resolve(tmpBase, name)
++    await mkdir(resolve(fullPath, '..'), { recursive: true })
++    await writeFile(fullPath, content)
++  }
++}
++
++t.teardown(async () => {
++  await rm(tmpBase, { recursive: true, force: true })
++})
++
++t.test('gitignore: true loads nearest .gitignore', async t => {
++  await setup({
++    '.gitignore': 'ignored.txt\nsubdir/\n',
++    'a.txt': '',
++    'ignored.txt': '',
++    'subdir/x.txt': '',
++    'subdir/y.txt': '',
++    'other/b.txt': '',
++  })
++  const syncRes = globSync('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  const asyncRes = await glob('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  t.same(j(syncRes), j(['a.txt', 'other/b.txt']))
++  t.same(j(asyncRes), j(['a.txt', 'other/b.txt']))
++})
++
++t.test('gitignore: string path to gitignore file', async t => {
++  await setup({
++    'custom.gitignore': 'ignored.txt\n',
++    'a.txt': '',
++    'ignored.txt': '',
++    'other/b.txt': '',
++  })
++  const giPath = resolve(tmpBase, 'custom.gitignore')
++  const syncRes = globSync('**', {
++    cwd: tmpBase,
++    gitignore: giPath,
++    nodir: true,
++  })
++  const asyncRes = await glob('**', {
++    cwd: tmpBase,
++    gitignore: giPath,
++    nodir: true,
++  })
++  t.same(j(syncRes), j(['a.txt', 'other/b.txt']))
++  t.same(j(asyncRes), j(['a.txt', 'other/b.txt']))
++})
++
++t.test('gitignore merges with ignore option, user ignore takes precedence', async t => {
++  await setup({
++    '.gitignore': 'ignored.txt\nsubdir/\n',
++    'a.txt': '',
++    'ignored.txt': '',
++    'subdir/x.txt': '',
++    'also-ignored.txt': '',
++  })
++  const syncRes = globSync('**', {
++    cwd: tmpBase,
++    gitignore: true,
++    ignore: 'also-ignored.txt',
++    nodir: true,
++  })
++  const asyncRes = await glob('**', {
++    cwd: tmpBase,
++    gitignore: true,
++    ignore: 'also-ignored.txt',
++    nodir: true,
++  })
++  t.same(j(syncRes), j(['a.txt']))
++  t.same(j(asyncRes), j(['a.txt']))
++})
++
++t.test('gitignore with no .gitignore file returns all results', async t => {
++  await setup({
++    'a.txt': '',
++    'b.txt': '',
++  })
++  const syncRes = globSync('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  const asyncRes = await glob('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  t.same(j(syncRes), j(['a.txt', 'b.txt']))
++  t.same(j(asyncRes), j(['a.txt', 'b.txt']))
++})
++
++t.test('gitignore skips comments and empty lines', async t => {
++  await setup({
++    '.gitignore': '# comment\n\nignored.txt\n\n# another comment\n',
++    'a.txt': '',
++    'ignored.txt': '',
++  })
++  const syncRes = globSync('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  const asyncRes = await glob('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  t.same(j(syncRes), j(['a.txt']))
++  t.same(j(asyncRes), j(['a.txt']))
++})
++
++t.test('gitignore directory pattern dir/', async t => {
++  await setup({
++    '.gitignore': 'logs/\n',
++    'a.txt': '',
++    'logs/a.log': '',
++    'logs/b.log': '',
++    'other/b.txt': '',
++  })
++  const syncRes = globSync('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  const asyncRes = await glob('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  t.same(j(syncRes), j(['a.txt', 'other/b.txt']))
++  t.same(j(asyncRes), j(['a.txt', 'other/b.txt']))
++})
++
++t.test('gitignore finds .gitignore in parent directory', async t => {
++  const parentDir = resolve(tmpBase, 'parent')
++  await rm(tmpBase, { recursive: true, force: true })
++  await mkdir(parentDir, { recursive: true })
++  await writeFile(resolve(tmpBase, '.gitignore'), 'ignored.txt\nsubdir/\n')
++  await writeFile(resolve(tmpBase, 'a.txt'), '')
++  await writeFile(resolve(tmpBase, 'ignored.txt'), '')
++  await writeFile(resolve(tmpBase, 'subdir/x.txt'), '')
++  await mkdir(resolve(tmpBase, 'subdir'), { recursive: true })
++
++  const syncRes = globSync('*', {
++    cwd: parentDir,
++    gitignore: true,
++    nodir: true,
++  })
++  const asyncRes = await glob('*', {
++    cwd: parentDir,
++    gitignore: true,
++    nodir: true,
++  })
++  t.same(j(syncRes), j(['a.txt']))
++  t.same(j(asyncRes), j(['a.txt']))
++})
++
++t.test('gitignore single pattern without trailing slash', async t => {
++  await setup({
++    '.gitignore': '*.log\n',
++    'a.txt': '',
++    'x.log': '',
++    'src/test.log': '',
++  })
++  const syncRes = globSync('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  const asyncRes = await glob('**', { cwd: tmpBase, gitignore: true, nodir: true })
++  t.same(j(syncRes), j(['a.txt']))
++  t.same(j(asyncRes), j(['a.txt']))
++})
+\ No newline at end of file

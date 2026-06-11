@@ -1,0 +1,423 @@
+﻿diff --git a/docs/windows-pattern-analysis.md b/docs/windows-pattern-analysis.md
+new file mode 100644
+index 0000000..bfe8503
+--- /dev/null
++++ b/docs/windows-pattern-analysis.md
+@@ -0,0 +1,417 @@
++# Windows 路径模式分析文档
++
++## 概述
++
++`Pattern` 类是 glob 匹配器中用于解析和管理路径模式的核心数据结构。它维护两个并行数组：`patternList`（包含已解析的模式片段）和 `globList`（包含原始 glob 字符串片段），并通过 `index` 提供不可变视图。本文档深入分析 Windows 平台下路径处理的几个关键方法。
++
++---
++
++## 1. UNC 路径与本地驱动器路径的区分算法
++
++### 1.1 UNC 路径识别：`isUNC()`
++
++UNC（Universal Naming Convention）路径格式为 `//server/share`，用于网络共享资源访问。
++
++```typescript
++isUNC(): boolean {
++  const pl = this.#patternList
++  return this.#platform === 'win32' &&
++         this.#index === 0 &&
++         pl[0] === '' &&
++         pl[1] === '' &&
++         typeof pl[2] === 'string' && !!pl[2] &&
++         typeof pl[3] === 'string' && !!pl[3]
++}
++```
++
++**判断条件（全部满足）：**
++
++| 条件 | 说明 |
++|------|------|
++| `platform === 'win32'` | 仅在 Windows 平台生效 |
++| `index === 0` | 必须是模式的起始位置 |
++| `pl[0] === ''` | 第一个片段为空字符串（对应 `//` 前的空段） |
++| `pl[1] === ''` | 第二个片段为空字符串（对应 `//` 后的空段） |
++| `pl[2]` 为非空字符串 | 服务器名称（如 `server`） |
++| `pl[3]` 为非空字符串 | 共享名称（如 `share`） |
++
++**示例：** 输入 `//server/share/path` 按 `/` 分割后得到 `['', '', 'server', 'share', 'path']`，满足上述所有条件。
++
++### 1.2 驱动器路径识别：`isDrive()`
++
++本地驱动器路径格式为 `C:/...`。
++
++```typescript
++isDrive(): boolean {
++  const pl = this.#patternList
++  return this.#platform === 'win32' &&
++         this.#index === 0 &&
++         this.length > 1 &&
++         typeof pl[0] === 'string' &&
++         /^[a-z]:$/i.test(pl[0])
++}
++```
++
++**判断条件（全部满足）：**
++
++| 条件 | 说明 |
++|------|------|
++| `platform === 'win32'` | 仅在 Windows 平台生效 |
++| `index === 0` | 必须是模式的起始位置 |
++| `length > 1` | 模式至少包含两个片段（驱动器 + 至少一个后续路径） |
++| `pl[0]` 匹配 `/^[a-z]:$/i` | 单个字母后跟冒号（如 `C:`、`d:`） |
++
++**关键细节：** `length > 1` 意味着单独的 `C:`（没有后续路径）不会被识别为驱动器模式。
++
++### 1.3 区分逻辑总结
++
++```
++输入模式分割为 patternList
++        │
++        ▼
++┌─────────────────────┐
++│ platform === win32? │
++└────────┬────────────┘
++         │ Yes
++         ▼
++┌──────────────────────────────────┐
++│ pl[0]==='' && pl[1]==='' &&      │  ← isUNC()
++│ pl[2]非空 && pl[3]非空?          │
++└────────┬─────────────────────────┘
++         │ No
++         ▼
++┌──────────────────────────────────┐
++│ pl[0] 匹配 /^[a-z]:$/i &&        │  ← isDrive()
++│ length > 1?                      │
++└──────────────────────────────────┘
++```
++
++---
++
++## 2. 构造函数中的路径规范化
++
++构造函数在 `index === 0`（初始创建）时对绝对路径的根条目进行规范化，将多段合并为单一段并保留尾部斜杠。
++
++### 2.1 UNC 路径规范化
++
++```typescript
++if (this.isUNC()) {
++  // '' / '' / 'host' / 'share'
++  const [p0, p1, p2, p3, ...prest] = this.#patternList
++  const [g0, g1, g2, g3, ...grest] = this.#globList
++  if (prest[0] === '') {
++    // 以 / 结尾的情况
++    prest.shift()
++    grest.shift()
++  }
++  const p = [p0, p1, p2, p3, ''].join('/')  // '//host/share/'
++  const g = [g0, g1, g2, g3, ''].join('/')
++  this.#patternList = [p, ...prest]
++  this.#globList = [g, ...grest]
++}
++```
++
++**处理流程：**
++1. 解构前四个片段（`''`, `''`, `server`, `share`）和剩余部分
++2. 如果剩余部分第一个元素是空字符串（表示原路径以 `/` 结尾），移除它
++3. 将前四段用 `/` 连接并追加空字符串，形成 `'//server/share/'`
++4. 用这个合并后的根替换原来的四段
++
++### 2.2 驱动器/绝对路径规范化
++
++```typescript
++} else if (this.isDrive() || this.isAbsolute()) {
++  const [p1, ...prest] = this.#patternList
++  const [g1, ...grest] = this.#globList
++  if (prest[0] === '') {
++    prest.shift()
++    grest.shift()
++  }
++  const p = `${p1 as string}/`  // 如 'C:/' 或 '/'
++  const g = `${g1}/`
++  this.#patternList = [p, ...prest]
++  this.#globList = [g, ...grest]
++}
++```
++
++**处理流程：**
++1. 取第一个片段（如 `C:` 或 `''`）
++2. 如果剩余部分以空字符串开头（原路径以 `/` 结尾），移除它
++3. 在第一段后追加 `/`，形成 `'C:/'` 或 `'/'`
++4. 用这个合并后的根替换原来的第一段
++
++### 2.3 规范化效果对比
++
++| 输入模式 | 原始 patternList | 规范化后 patternList |
++|----------|------------------|---------------------|
++| `//server/share` | `['', '', 'server', 'share']` | `['//server/share/']` |
++| `//server/share/` | `['', '', 'server', 'share', '']` | `['//server/share/']` |
++| `//server/share/x` | `['', '', 'server', 'share', 'x']` | `['//server/share/', 'x']` |
++| `C:/` | `['C:', '']` | `['C:/']` |
++| `C:/foo` | `['C:', 'foo']` | `['C:/', 'foo']` |
++| `/etc` | `['', 'etc']` | `['/', 'etc']` |
++
++---
++
++## 3. 不同平台下 `root()` 的返回值差异
++
++```typescript
++root(): string {
++  const p = this.#patternList[0]
++  return (typeof p === 'string' && this.isAbsolute() && this.#index === 0) ?
++    p
++    : ''
++}
++```
++
++### 3.1 返回值逻辑
++
++| 条件 | 返回值 |
++|------|--------|
++| `patternList[0]` 是字符串 **且** `isAbsolute()` 为 true **且** `index === 0` | 返回 `patternList[0]`（规范化后的根） |
++| 其他情况 | 返回空字符串 `''` |
++
++### 3.2 平台差异
++
++#### Windows (`win32`)
++
++在 Windows 上，`isAbsolute()` 有三种情况返回 true：
++
++```typescript
++isAbsolute(): boolean {
++  return (pl[0] === '' && pl.length > 1) ||  // Unix 风格绝对路径
++         this.isDrive() ||                    // C:/...
++         this.isUNC()                         // //server/share
++}
++```
++
++| 模式类型 | `root()` 返回值 | 说明 |
++|----------|-----------------|------|
++| `//server/share/**` | `'//server/share/'` | UNC 根，已规范化 |
++| `C:/foo/bar` | `'C:/'` | 驱动器根，已规范化 |
++| `/windows/system32` | `'/'` | Unix 风格根 |
++
++#### Unix/Linux/macOS
++
++在非 Windows 平台上，`isDrive()` 和 `isUNC()` 始终返回 false（因为平台检查失败）。只有 `pl[0] === '' && pl.length > 1` 的情况才会被认为是绝对路径。
++
++| 模式类型 | `root()` 返回值 | 说明 |
++|----------|-----------------|------|
++| `/etc/passwd` | `'/'` | 标准 Unix 绝对路径 |
++| `./relative` | `''` | 相对路径，返回空 |
++
++### 3.3 设计意图
++
++`root()` 方法的设计意图是**提取模式的根锚点**，用于后续的路径匹配逻辑：
++
++1. **UNC 路径**：返回完整的 `//server/share/` 作为根，确保网络路径的服务器和共享名作为整体处理
++2. **驱动器路径**：返回 `C:/` 作为根，保留卷信息
++3. **Unix 绝对路径**：返回 `/` 作为根
++4. **相对路径**：返回空字符串，表示没有根锚点
++
++这种设计使得 glob 匹配器可以在不同平台上一致地处理路径匹配，同时保留 Windows 特有的路径语义。
++
++---
++
++## 4. 边缘情况分析
++
++### 4.1 `//` 开头的相对路径
++
++**问题：** 输入 `//` 本身（没有服务器和共享名）
++
++```
++patternList = ['', '', '']  或  ['', '']
++```
++
++- `isUNC()` 检查：`pl[2]` 不存在或为空字符串 → `!!pl[2]` 为 false → **不识别为 UNC**
++- `isAbsolute()` 检查：`pl[0] === '' && pl.length > 1` → **识别为绝对路径**
++- `root()` 返回：`''`（第一个元素）
++
++**结论：** `//` 会被当作 Unix 风格的绝对路径处理，根为空字符串。这在 Windows 上可能导致意外行为。
++
++### 4.2 单个驱动器字母 `C:`
++
++**问题：** 输入仅为 `C:`（无后续路径）
++
++```
++patternList = ['C:']
++```
++
++- `isDrive()` 检查：`length > 1` 为 false → **不识别为驱动器模式**
++- `isAbsolute()` 检查：不满足任何条件 → **不识别为绝对路径**
++- `root()` 返回：`''`
++
++**结论：** 单独的 `C:` 不会被规范化，也不会被视为绝对路径。代码注释中提到这是一个已知限制：
++
++> `XXX: would be nice to handle patterns like c:* to test the cwd in c: for *, but I don't know of a way to even figure out what that cwd is without actually chdir'ing into it?`
++
++### 4.3 大小写混合的驱动器字母
++
++**问题：** 输入 `c:/path` vs `C:/path`
++
++正则 `/^[a-z]:$/i` 使用 `i` 标志（不区分大小写），所以 `c:` 和 `C:` 都会被正确识别。规范化后保留原始大小写（`c:/` 或 `C:/`）。
++
++### 4.4 UNC 路径以斜杠结尾
++
++**问题：** `//server/share/` vs `//server/share`
++
++构造函数会检测 `prest[0] === ''` 并移除多余的空字符串元素，确保两种输入产生相同的规范化结果 `['//server/share/']`。
++
++### 4.5 非 Windows 平台上的 UNC 风格路径
++
++**问题：** 在 Linux 上输入 `//server/share`
++
++- `isUNC()` 检查：`platform === 'win32'` 为 false → **不识别为 UNC**
++- `isAbsolute()` 检查：`pl[0] === '' && pl.length > 1` → **识别为绝对路径**
++- 规范化：走 `isAbsolute()` 分支，第一个元素 `''` 变为 `'/'`
++- 最终 patternList：`['/', '', 'server', 'share']`
++
++**结论：** 在 Linux 上，UNC 风格路径会被降级为普通绝对路径处理，`//` 被规范化为单个 `/`，丢失服务器和共享信息。
++
++### 4.6 空模式列表
++
++构造函数开头有防御性检查：
++
++```typescript
++if (!isPatternList(patternList)) {
++  throw new TypeError('empty pattern list')
++}
++```
++
++`isPatternList` 要求 `length >= 1`，所以空数组会直接抛出异常。
++
++---
++
++## 5. 具体示例演示
++
++### 示例 1：`'//server/**/*.js'`
++
++#### 步骤 1：初始分割
++
++假设输入已被分割为：
++```
++patternList = ['', '', 'server', '**', '*.js']
++globList    = ['', '', 'server', '**', '*.js']
++index       = 0
++platform    = 'win32'
++```
++
++#### 步骤 2：构造函数规范化
++
++1. 检查 `isUNC()`：
++   - `platform === 'win32'` ✓
++   - `index === 0` ✓
++   - `pl[0] === ''` ✓
++   - `pl[1] === ''` ✓
++   - `pl[2] === 'server'`（非空字符串）✓
++   - `pl[3] === '**'`（非空字符串）✓
++   - **结果：true**
++
++2. 进入 UNC 规范化分支：
++   ```
++   p0='', p1='', p2='server', p3='**'
++   prest = ['*.js']
++   prest[0] === '' ? 否（是 '*.js'），不移除
++   ```
++
++3. 合并根：
++   ```
++   p = ['', '', 'server', '**', ''].join('/') = '//server/**/'
++   ```
++
++4. 最终 patternList：
++   ```
++   ['//server/**/', '*.js']
++   ```
++
++#### 步骤 3：各方法返回值
++
++| 方法 | 返回值 | 说明 |
++|------|--------|------|
++| `isUNC()` | `true` | 符合 UNC 模式 |
++| `isDrive()` | `false` | 不是驱动器路径 |
++| `isAbsolute()` | `true` | UNC 路径视为绝对 |
++| `root()` | `'//server/**/'` | 规范化后的 UNC 根 |
++| `pattern()` | `'//server/**/'` | 当前索引处的模式 |
++| `globString()` | `'//server/**/*.js'` | 完整的 glob 字符串 |
++
++#### 步骤 4：rest() 调用
++
++调用 `rest()` 后，新 Pattern 的 `index = 1`：
++- `pattern()` → `'*.js'`
++- `isUNC()` → `false`（index 不为 0）
++- `root()` → `''`（index 不为 0）
++
++---
++
++### 示例 2：`'C:/foo/bar/**'`
++
++#### 步骤 1：初始分割
++
++```
++patternList = ['C:', 'foo', 'bar', '**']
++globList    = ['C:', 'foo', 'bar', '**']
++index       = 0
++platform    = 'win32'
++```
++
++#### 步骤 2：构造函数规范化
++
++1. 检查 `isUNC()`：
++   - `pl[0] === 'C:'`（不是 `''`）→ **false**
++
++2. 检查 `isDrive()`：
++   - `platform === 'win32'` ✓
++   - `index === 0` ✓
++   - `length > 1`（4 > 1）✓
++   - `/^[a-z]:$/i.test('C:')` ✓
++   - **结果：true**
++
++3. 进入 Drive/Absolute 规范化分支：
++   ```
++   p1 = 'C:'
++   prest = ['foo', 'bar', '**']
++   prest[0] === '' ? 否（是 'foo'），不移除
++   ```
++
++4. 合并根：
++   ```
++   p = 'C:' + '/' = 'C:/'
++   ```
++
++5. 最终 patternList：
++   ```
++   ['C:/', 'foo', 'bar', '**']
++   ```
++
++#### 步骤 3：各方法返回值
++
++| 方法 | 返回值 | 说明 |
++|------|--------|------|
++| `isUNC()` | `false` | 不是 UNC 路径 |
++| `isDrive()` | `true` | 符合驱动器模式 |
++| `isAbsolute()` | `true` | 驱动器路径视为绝对 |
++| `root()` | `'C:/'` | 规范化后的驱动器根 |
++| `pattern()` | `'C:/'` | 当前索引处的模式 |
++| `globString()` | `'C:/foo/bar/**'` | 完整的 glob 字符串 |
++
++#### 步骤 4：rest() 链式调用
++
++```
++pattern.rest()        → index=1, pattern()='foo'
++pattern.rest().rest() → index=2, pattern()='bar'
++pattern.rest().rest().rest() → index=3, pattern()='**', isGlobstar()=true
++```
++
++每次 `rest()` 调用都会继承父级的 `#isAbsolute`、`#isUNC`、`#isDrive` 缓存值，确保子视图仍然知道整个模式是绝对路径。
++
++---
++
++## 总结
++
++`Pattern` 类通过精巧的数组分割和规范化策略，实现了对 Windows UNC 路径、驱动器路径和 Unix 绝对路径的统一处理。核心设计原则包括：
++
++1. **平台感知**：通过 `platform` 参数区分 Windows 和 Unix 行为
++2. **惰性缓存**：`isUNC()`、`isDrive()`、`isAbsolute()` 使用 `#isXXX` 私有字段缓存结果
++3. **不可变视图**：通过 `index` 和 `rest()` 实现链式访问，共享底层数组
++4. **根规范化**：构造函数将多段根合并为单一段，简化后续匹配逻辑

@@ -1,0 +1,116 @@
+﻿diff --git a/src/has-magic.ts b/src/has-magic.ts
+index 0d93f38..1c125fc 100644
+--- a/src/has-magic.ts
++++ b/src/has-magic.ts
+@@ -1,6 +1,70 @@
+ import { Minimatch } from 'minimatch'
+ import type { GlobOptions } from './glob.js'
+ 
++const extglobTypes = new Set(['!', '?', '+', '*', '@'])
++
++/**
++ * Fast check for unescaped magic glob characters in a single pattern.
++ * Returns true if there are likely magic characters, but may return true
++ * in some edge cases where minimatch would parse the pattern as literal.
++ * The result is confirmed by {@link Minimatch#hasMagic} when true.
++ */
++const hasUnescapedMagicChars = (
++  pattern: string,
++  options: GlobOptions = {},
++): boolean => {
++  if (!pattern) return false
++
++  const {
++    magicalBraces = false,
++    nobrace = false,
++    noext = false,
++    windowsPathsNoEscape = false,
++  } = options
++
++  let escaped = false
++  let inCharClass = false
++
++  for (let i = 0; i < pattern.length; i++) {
++    const c = pattern[i]
++
++    if (escaped) {
++      escaped = false
++      continue
++    }
++
++    if (c === '\\' && !windowsPathsNoEscape) {
++      escaped = true
++      continue
++    }
++
++    if (inCharClass) {
++      if (c === ']') inCharClass = false
++      continue
++    }
++
++    if (c === '[') {
++      inCharClass = true
++      continue
++    }
++
++    if (c === '*' || c === '?') return true
++
++    if (c === '{' && magicalBraces && !nobrace) return true
++
++    if (
++      !noext &&
++      i + 1 < pattern.length &&
++      pattern[i + 1] === '(' &&
++      (extglobTypes as Set<string>).has(c as string)
++    ) {
++      return true
++    }
++  }
++
++  return false
++}
++
+ /**
+  * Return true if the patterns provided contain any magic glob characters,
+  * given the options provided.
+@@ -17,6 +81,7 @@ export const hasMagic = (
+   options: GlobOptions = {},
+ ): boolean => {
+   for (const p of Array.isArray(pattern) ? pattern : [pattern]) {
++    if (!hasUnescapedMagicChars(p, options)) continue
+     if (new Minimatch(p, options).hasMagic()) return true
+   }
+   return false
+diff --git a/test/has-magic.ts b/test/has-magic.ts
+index 6e7ea01..f18feba 100644
+--- a/test/has-magic.ts
++++ b/test/has-magic.ts
+@@ -37,4 +37,28 @@ t.test('detect magic in glob patterns', async t => {
+     glob.hasMagic('{a,b}', { nobrace: true, magicalBraces: true }),
+     'magical braces not magic in {a,b} nobrace:true',
+   )
++  t.notOk(
++    glob.hasMagic('\\{a,b\\}'),
++    'no magic in escaped braces',
++  )
++  t.notOk(
++    glob.hasMagic('\\{a,b\\}', { magicalBraces: true }),
++    'escaped braces not magic even with magicalBraces',
++  )
++  t.notOk(
++    glob.hasMagic('\\*'),
++    'no magic in escaped star',
++  )
++  t.notOk(
++    glob.hasMagic('\\?'),
++    'no magic in escaped qmark',
++  )
++  t.notOk(
++    glob.hasMagic('\\[x\\]'),
++    'no magic in escaped brackets',
++  )
++  t.ok(
++    glob.hasMagic('\\*a*'),
++    'magic when unescaped magic char present with escaped ones',
++  )
+ })
